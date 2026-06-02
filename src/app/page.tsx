@@ -79,6 +79,12 @@ export default function Home() {
   const [error, setError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [didSubmit, setDidSubmit] = useState(false);
+  const [lastSubmission, setLastSubmission] = useState<{
+    id: string;
+    type: SubmissionType;
+    note: string | null;
+    imagesCount: number;
+  } | null>(null);
   const [showTech, setShowTech] = useState(false);
   const [lastTech, setLastTech] = useState<string | null>(null);
 
@@ -132,6 +138,7 @@ export default function Home() {
     setError(null);
     setIsSubmitting(false);
     setDidSubmit(false);
+    setLastSubmission(null);
     setImages((prev) => {
       for (const img of prev) URL.revokeObjectURL(img.previewUrl);
       return [];
@@ -166,6 +173,7 @@ export default function Home() {
       const userId = session?.user?.id ?? null;
       const userName =
         (session?.user?.user_metadata?.name as string | undefined) ?? null;
+      const noteValue = note.trim() ? note.trim() : null;
 
       const submissionId = crypto.randomUUID();
       const uploadedPaths: string[] = [];
@@ -196,7 +204,7 @@ export default function Home() {
           user_name: userName,
           type: submissionType,
           images: uploadedPaths,
-          note: note.trim() ? note.trim() : null,
+          note: noteValue,
           source: sourceParam ?? "web",
           app_version: appVersion,
           device_info: getDeviceInfo(),
@@ -205,6 +213,12 @@ export default function Home() {
         });
       if (insertRes.error) throw insertRes.error;
 
+      setLastSubmission({
+        id: submissionId,
+        type: submissionType,
+        note: noteValue,
+        imagesCount: uploadedPaths.length,
+      });
       setDidSubmit(true);
       setImages((prev) => {
         for (const img of prev) URL.revokeObjectURL(img.previewUrl);
@@ -221,6 +235,8 @@ export default function Home() {
   };
 
   if (didSubmit) {
+    const sentTypeLabel =
+      lastSubmission?.type === "KONTROLLFOTO" ? "Kontrollfoto" : "Bunnbrett foto";
     return (
       <div className="flex flex-col min-h-dvh px-4 pb-10 pt-8">
         <header className="mx-auto w-full max-w-xl">
@@ -245,6 +261,16 @@ export default function Home() {
             <div className="mt-2 text-zinc-300">
               Innsendingen er mottatt. Vil du sende inn flere?
             </div>
+
+            {lastSubmission ? (
+              <div className="mt-4 rounded-2xl border border-zinc-800 bg-zinc-950 px-4 py-3 text-sm text-zinc-200">
+                <div>Type: {sentTypeLabel}</div>
+                <div>Antall bilder: {lastSubmission.imagesCount}</div>
+                <div className="mt-2 text-zinc-300">
+                  Kommentar: {lastSubmission.note ? lastSubmission.note : "Ingen"}
+                </div>
+              </div>
+            ) : null}
 
             <div className="mt-6 grid grid-cols-1 gap-3">
               <button
@@ -271,7 +297,7 @@ export default function Home() {
   const typeLabel = submissionType === "BUNNBRETT_FOTO" ? "Bunnbrett foto" : "Kontrollfoto";
 
   return (
-    <div className="flex flex-col min-h-dvh px-4 pb-28 pt-8">
+    <div className="flex flex-col min-h-[100svh] px-4 pb-[calc(8rem+env(safe-area-inset-bottom))] pt-8">
       <header className="mx-auto w-full max-w-xl">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-3">
@@ -449,7 +475,10 @@ export default function Home() {
         </div>
       </main>
 
-      <div className="fixed inset-x-0 bottom-0 z-40 border-t border-zinc-800 bg-zinc-950/85 backdrop-blur">
+      <div
+        className="fixed inset-x-0 bottom-3 z-40 border-t border-zinc-800 bg-zinc-950/85 backdrop-blur"
+        style={{ paddingBottom: "env(safe-area-inset-bottom)" }}
+      >
         <div className="mx-auto w-full max-w-xl px-4 py-3">
           <button
             type="button"
