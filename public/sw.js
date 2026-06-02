@@ -1,4 +1,4 @@
-const CACHE_NAME = "lek-varroascan-v1";
+const CACHE_NAME = "lek-varroascan-v2";
 
 function getBasePath() {
   const scope = new URL(self.registration.scope);
@@ -51,15 +51,12 @@ self.addEventListener("fetch", (event) => {
   }
 
   event.respondWith(
-    caches.match(request).then((cachedResponse) => {
-      if (cachedResponse) return cachedResponse;
-
-      return fetch(request).then((response) => {
+    fetch(request)
+      .then((response) => {
         const copy = response.clone();
         caches.open(CACHE_NAME).then((cache) => cache.put(request, copy));
         return response;
-      });
-    }),
+      })
+      .catch(() => caches.match(request)),
   );
 });
-

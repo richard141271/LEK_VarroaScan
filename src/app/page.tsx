@@ -25,6 +25,32 @@ function formatBytes(bytes: number) {
   return `${kb.toFixed(0)} KB`;
 }
 
+function normalizeErrorMessage(e: unknown) {
+  const raw =
+    typeof e === "object" && e && "message" in e
+      ? String((e as { message?: unknown }).message)
+      : "Ukjent feil";
+
+  const lower = raw.toLowerCase();
+  if (
+    lower.includes("row-level security") ||
+    lower.includes("violates row-level security") ||
+    lower.includes("rls")
+  ) {
+    return `RLS blokkerer innsetting i Supabase. Sjekk at du kjører SQL i samme Supabase-prosjekt som appen peker mot (se supabaseUrl i teknisk info). Kjør både policy-setup og GRANT (schema/table privileges) i dette prosjektet. (${raw})`;
+  }
+
+  if (
+    e instanceof TypeError ||
+    lower.includes("load failed") ||
+    lower.includes("failed to fetch")
+  ) {
+    return `Nettverksfeil mot backend. Sjekk Vercel env (NEXT_PUBLIC_SUPABASE_URL/NEXT_PUBLIC_SUPABASE_ANON_KEY) og at Supabase-migrasjonen er kjørt (bucket/policies). (${raw})`;
+  }
+
+  return raw;
+}
+
 export default function Home() {
   const pathname = usePathname();
   const isOnline = useOnlineStatus();
@@ -37,9 +63,13 @@ export default function Home() {
   const [error, setError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [didSubmit, setDidSubmit] = useState(false);
+  const [showTech, setShowTech] = useState(false);
+  const [lastTech, setLastTech] = useState<string | null>(null);
 
   const appVersion = useMemo(() => getAppVersion(), []);
   const basePath = process.env.NEXT_PUBLIC_BASE_PATH ?? "";
+  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL ?? "";
+  const isAdminEnabled = process.env.NEXT_PUBLIC_ENABLE_ADMIN === "true";
 
   const onPickImages = (files: FileList | null) => {
     setError(null);
@@ -89,6 +119,7 @@ export default function Home() {
 
   const onSubmit = async () => {
     setError(null);
+    setLastTech(null);
 
     if (!isOnline) {
       setError("Du er offline. Koble til nett og prøv igjen.");
@@ -106,6 +137,7 @@ export default function Home() {
       return;
     }
 
+    let step = "Starter";
     setIsSubmitting(true);
     try {
       const { data: sessionData } = await supabase.auth.getSession();
@@ -114,28 +146,10 @@ export default function Home() {
       const userName =
         (session?.user?.user_metadata?.name as string | undefined) ?? null;
 
-      const insertRes = await supabase
-        .from("varroa_submissions")
-        .insert({
-          user_id: userId,
-          user_name: userName,
-          type: submissionType,
-          images: [],
-          note: note.trim() ? note.trim() : null,
-          source: "web",
-          app_version: appVersion,
-          device_info: getDeviceInfo(),
-          route: pathname,
-          status: "NY",
-        })
-        .select("id")
-        .single();
-
-      if (insertRes.error) throw insertRes.error;
-      const submissionId = insertRes.data.id as string;
-
+      const submissionId = crypto.randomUUID();
       const uploadedPaths: string[] = [];
-      for (const img of images) {
+      for (const [index, img] of images.entries()) {
+        step = `Laster opp bilde ${index + 1}/${images.length}`;
         const ext = img.file.name.split(".").pop()?.toLowerCase();
         const safeExt = ext && ext.length <= 10 ? ext : "jpg";
         const objectPath = `submissions/${submissionId}/${crypto.randomUUID()}.${safeExt}`;
@@ -152,11 +166,23 @@ export default function Home() {
         uploadedPaths.push(objectPath);
       }
 
-      const updateRes = await supabase
+      step = "Oppretter innsending";
+      const insertRes = await supabase
         .from("varroa_submissions")
-        .update({ images: uploadedPaths })
-        .eq("id", submissionId);
-      if (updateRes.error) throw updateRes.error;
+        .insert({
+          id: submissionId,
+          user_id: userId,
+          user_name: userName,
+          type: submissionType,
+          images: uploadedPaths,
+          note: note.trim() ? note.trim() : null,
+          source: "web",
+          app_version: appVersion,
+          device_info: getDeviceInfo(),
+          route: pathname,
+          status: "NY",
+        });
+      if (insertRes.error) throw insertRes.error;
 
       setDidSubmit(true);
       setImages((prev) => {
@@ -165,11 +191,9 @@ export default function Home() {
       });
       setNote("");
     } catch (e) {
-      const message =
-        typeof e === "object" && e && "message" in e
-          ? String((e as { message?: unknown }).message)
-          : "Ukjent feil";
-      setError(`Kunne ikke sende inn: ${message}`);
+      const friendly = normalizeErrorMessage(e);
+      setLastTech(`${step}: ${friendly}`);
+      setError(`Kunne ikke sende inn (${step}): ${friendly}`);
     } finally {
       setIsSubmitting(false);
     }
@@ -212,6 +236,7 @@ export default function Home() {
               <a
                 href={`${basePath}/admin/`}
                 className="h-12 rounded-2xl border border-zinc-700 text-zinc-100 font-semibold flex items-center justify-center active:opacity-90"
+                style={{ display: isAdminEnabled ? undefined : "none" }}
               >
                 Admin
               </a>
@@ -240,6 +265,7 @@ export default function Home() {
           <a
             href={`${basePath}/admin/`}
             className="text-sm font-semibold text-zinc-200 hover:text-zinc-50"
+            style={{ display: isAdminEnabled ? undefined : "none" }}
           >
             Admin
           </a>
@@ -358,6 +384,36 @@ export default function Home() {
             {error ? (
               <div className="rounded-2xl border border-red-900/60 bg-red-950/40 px-4 py-3 text-sm text-red-200">
                 {error}
+              </div>
+            ) : null}
+
+            <button
+              type="button"
+              onClick={() => setShowTech((v) => !v)}
+              className="text-left text-xs text-zinc-400 hover:text-zinc-200"
+            >
+              {showTech ? "Skjul teknisk info" : "Vis teknisk info"}
+            </button>
+
+            {showTech ? (
+              <div className="rounded-2xl border border-zinc-800 bg-zinc-950 px-4 py-3 text-xs text-zinc-300">
+                <div>route: {pathname}</div>
+                <div>appVersion: {appVersion}</div>
+                <div>online: {String(isOnline)}</div>
+                <div>
+                  supabaseUrl:{" "}
+                  {supabaseUrl
+                    ? (() => {
+                        try {
+                          const u = new URL(supabaseUrl);
+                          return u.origin;
+                        } catch {
+                          return supabaseUrl;
+                        }
+                      })()
+                    : "Mangler"}
+                </div>
+                {lastTech ? <div>feil: {lastTech}</div> : null}
               </div>
             ) : null}
 
