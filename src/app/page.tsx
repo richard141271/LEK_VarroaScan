@@ -33,6 +33,14 @@ function normalizeErrorMessage(e: unknown) {
 
   const lower = raw.toLowerCase();
   if (
+    lower.includes("row-level security") ||
+    lower.includes("violates row-level security") ||
+    lower.includes("rls")
+  ) {
+    return `RLS blokkerer innsetting i Supabase. Kjør SQL-migrasjonen i dette Supabase-prosjektet (staging/prod separat) og sjekk at policy "varroa_submissions_insert_anyone" finnes og gjelder for anon/authenticated. (${raw})`;
+  }
+
+  if (
     e instanceof TypeError ||
     lower.includes("load failed") ||
     lower.includes("failed to fetch")
