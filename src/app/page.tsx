@@ -37,7 +37,7 @@ function normalizeErrorMessage(e: unknown) {
     lower.includes("violates row-level security") ||
     lower.includes("rls")
   ) {
-    return `RLS blokkerer innsetting i Supabase. Kjør SQL-migrasjonen i dette Supabase-prosjektet (staging/prod separat) og sjekk at policy "varroa_submissions_insert_anyone" finnes og gjelder for anon/authenticated. (${raw})`;
+    return `RLS blokkerer innsetting i Supabase. Sjekk at du kjører SQL i samme Supabase-prosjekt som appen peker mot (se supabaseUrl i teknisk info). Kjør både policy-setup og GRANT (schema/table privileges) i dette prosjektet. (${raw})`;
   }
 
   if (
