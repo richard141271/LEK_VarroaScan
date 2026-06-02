@@ -1,0 +1,19 @@
+{
+  "name": "LEK-VarroaScan",
+  "short_name": "VarroaScan",
+  "description": "Datainnsamling av bunnbrett-bilder for varroa",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#09090b",
+  "theme_color": "#0f172a",
+  "icons": [
+    {
+      "src": "./icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ]
+}
+
