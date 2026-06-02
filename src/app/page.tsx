@@ -146,27 +146,7 @@ export default function Home() {
       const userName =
         (session?.user?.user_metadata?.name as string | undefined) ?? null;
 
-      step = "Oppretter innsending";
-      const insertRes = await supabase
-        .from("varroa_submissions")
-        .insert({
-          user_id: userId,
-          user_name: userName,
-          type: submissionType,
-          images: [],
-          note: note.trim() ? note.trim() : null,
-          source: "web",
-          app_version: appVersion,
-          device_info: getDeviceInfo(),
-          route: pathname,
-          status: "NY",
-        })
-        .select("id")
-        .single();
-
-      if (insertRes.error) throw insertRes.error;
-      const submissionId = insertRes.data.id as string;
-
+      const submissionId = crypto.randomUUID();
       const uploadedPaths: string[] = [];
       for (const [index, img] of images.entries()) {
         step = `Laster opp bilde ${index + 1}/${images.length}`;
@@ -186,12 +166,23 @@ export default function Home() {
         uploadedPaths.push(objectPath);
       }
 
-      step = "Lagrer bildestier";
-      const updateRes = await supabase
+      step = "Oppretter innsending";
+      const insertRes = await supabase
         .from("varroa_submissions")
-        .update({ images: uploadedPaths })
-        .eq("id", submissionId);
-      if (updateRes.error) throw updateRes.error;
+        .insert({
+          id: submissionId,
+          user_id: userId,
+          user_name: userName,
+          type: submissionType,
+          images: uploadedPaths,
+          note: note.trim() ? note.trim() : null,
+          source: "web",
+          app_version: appVersion,
+          device_info: getDeviceInfo(),
+          route: pathname,
+          status: "NY",
+        });
+      if (insertRes.error) throw insertRes.error;
 
       setDidSubmit(true);
       setImages((prev) => {
