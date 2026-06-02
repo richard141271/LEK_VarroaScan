@@ -69,6 +69,7 @@ export default function Home() {
   const appVersion = useMemo(() => getAppVersion(), []);
   const basePath = process.env.NEXT_PUBLIC_BASE_PATH ?? "";
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL ?? "";
+  const isAdminEnabled = process.env.NEXT_PUBLIC_ENABLE_ADMIN === "true";
 
   const onPickImages = (files: FileList | null) => {
     setError(null);
@@ -244,6 +245,7 @@ export default function Home() {
               <a
                 href={`${basePath}/admin/`}
                 className="h-12 rounded-2xl border border-zinc-700 text-zinc-100 font-semibold flex items-center justify-center active:opacity-90"
+                style={{ display: isAdminEnabled ? undefined : "none" }}
               >
                 Admin
               </a>
@@ -272,6 +274,7 @@ export default function Home() {
           <a
             href={`${basePath}/admin/`}
             className="text-sm font-semibold text-zinc-200 hover:text-zinc-50"
+            style={{ display: isAdminEnabled ? undefined : "none" }}
           >
             Admin
           </a>

@@ -23,6 +23,7 @@ function formatDateTime(value: string) {
 export default function AdminInboxPage() {
   const isOnline = useOnlineStatus();
   const basePath = process.env.NEXT_PUBLIC_BASE_PATH ?? "";
+  const isAdminEnabled = process.env.NEXT_PUBLIC_ENABLE_ADMIN === "true";
 
   const supabase = useMemo(() => getSupabaseClient(), []);
   const [email, setEmail] = useState("");
@@ -133,6 +134,36 @@ export default function AdminInboxPage() {
     await supabase.auth.signOut();
     await reload();
   };
+
+  if (!isAdminEnabled) {
+    return (
+      <div className="min-h-dvh px-4 pb-10 pt-8">
+        <header className="mx-auto w-full max-w-3xl">
+          <div className="flex items-center justify-between">
+            <div>
+              <div className="text-lg font-semibold">Admin</div>
+              <div className="text-xs text-zinc-400">Deaktivert</div>
+            </div>
+            <a
+              href={`${basePath}/`}
+              className="text-sm font-semibold text-zinc-200 hover:text-zinc-50"
+            >
+              Innsending
+            </a>
+          </div>
+        </header>
+
+        <main className="mx-auto mt-6 w-full max-w-3xl">
+          <div className="rounded-3xl bg-zinc-900 border border-zinc-800 p-5">
+            <div className="text-base font-semibold">Admin er midlertidig av</div>
+            <div className="mt-1 text-sm text-zinc-400">
+              Fokus nå: innsending til staging → test → main.
+            </div>
+          </div>
+        </main>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-dvh px-4 pb-10 pt-8">
