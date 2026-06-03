@@ -65,6 +65,18 @@ function normalizeType(value: string | null): SubmissionType | null {
   return null;
 }
 
+function normalizeReturnUrl(value: string | null) {
+  const raw = (value ?? "").trim();
+  if (!raw || raw.length > 500) return null;
+  try {
+    const url = new URL(raw);
+    if (url.protocol !== "https:" && url.protocol !== "http:") return null;
+    return url.toString();
+  } catch {
+    return null;
+  }
+}
+
 export default function Home() {
   const pathname = usePathname();
   const isOnline = useOnlineStatus();
@@ -98,6 +110,18 @@ export default function Home() {
     const params = new URLSearchParams(window.location.search);
     return normalizeSource(params.get("source"));
   }, []);
+  const returnUrl = useMemo(() => {
+    if (typeof window === "undefined") return null;
+    const params = new URLSearchParams(window.location.search);
+    const fromParam = normalizeReturnUrl(params.get("returnTo"));
+    if (fromParam) return fromParam;
+    const ref = normalizeReturnUrl(document.referrer);
+    return ref;
+  }, []);
+  const returnLabel = useMemo(() => {
+    if (sourceParam === "biens-vokter") return "Tilbake til LEK-Biens Vokter";
+    return "Tilbake";
+  }, [sourceParam]);
 
   useEffect(() => {
     const vv = window.visualViewport;
@@ -262,6 +286,16 @@ export default function Home() {
       <div className="flex flex-col min-h-dvh px-4 pb-10 pt-8">
         <header className="mx-auto w-full max-w-xl">
           <div className="flex items-center justify-between">
+            {returnUrl ? (
+              <a
+                href={returnUrl}
+                className="text-sm font-semibold text-zinc-200 hover:text-zinc-50"
+              >
+                ← {returnLabel}
+              </a>
+            ) : (
+              <div />
+            )}
             <div className="flex items-center gap-3">
               <div className="h-10 w-10 rounded-2xl bg-zinc-800 flex items-center justify-center">
                 <span className="text-sm font-semibold">VS</span>
@@ -301,6 +335,14 @@ export default function Home() {
               >
                 Send flere
               </button>
+              {returnUrl ? (
+                <a
+                  href={returnUrl}
+                  className="h-12 rounded-2xl border border-zinc-700 text-zinc-100 font-semibold flex items-center justify-center active:opacity-90"
+                >
+                  ← {returnLabel}
+                </a>
+              ) : null}
               <a
                 href={`${basePath}/admin/`}
                 className="h-12 rounded-2xl border border-zinc-700 text-zinc-100 font-semibold flex items-center justify-center active:opacity-90"
@@ -326,6 +368,16 @@ export default function Home() {
     >
       <header className="mx-auto w-full max-w-xl">
         <div className="flex items-center justify-between">
+          {returnUrl ? (
+            <a
+              href={returnUrl}
+              className="text-sm font-semibold text-zinc-200 hover:text-zinc-50"
+            >
+              ← {returnLabel}
+            </a>
+          ) : (
+            <div />
+          )}
           <div className="flex items-center gap-3">
             <div className="h-10 w-10 rounded-2xl bg-zinc-800 flex items-center justify-center">
               <span className="text-sm font-semibold">VS</span>
