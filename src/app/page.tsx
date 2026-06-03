@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { usePathname } from "next/navigation";
 import { getAppVersion } from "@/lib/appVersion";
 import { getDeviceInfo } from "@/lib/deviceInfo";
@@ -85,6 +85,7 @@ export default function Home() {
     note: string | null;
     imagesCount: number;
   } | null>(null);
+  const [bottomOverlayPx, setBottomOverlayPx] = useState(0);
   const [showTech, setShowTech] = useState(false);
   const [lastTech, setLastTech] = useState<string | null>(null);
 
@@ -96,6 +97,26 @@ export default function Home() {
     if (typeof window === "undefined") return null;
     const params = new URLSearchParams(window.location.search);
     return normalizeSource(params.get("source"));
+  }, []);
+
+  useEffect(() => {
+    const vv = window.visualViewport;
+    if (!vv) return;
+
+    const update = () => {
+      const next = Math.max(0, Math.round(window.innerHeight - vv.height - vv.offsetTop));
+      setBottomOverlayPx(next);
+    };
+
+    update();
+    vv.addEventListener("resize", update);
+    vv.addEventListener("scroll", update);
+    window.addEventListener("resize", update);
+    return () => {
+      vv.removeEventListener("resize", update);
+      vv.removeEventListener("scroll", update);
+      window.removeEventListener("resize", update);
+    };
   }, []);
 
   const onPickImages = (files: FileList | null) => {
@@ -297,7 +318,12 @@ export default function Home() {
   const typeLabel = submissionType === "BUNNBRETT_FOTO" ? "Bunnbrett foto" : "Kontrollfoto";
 
   return (
-    <div className="flex flex-col min-h-[100svh] px-4 pb-[calc(8rem+env(safe-area-inset-bottom))] pt-8">
+    <div
+      className="flex flex-col min-h-[100svh] px-4 pt-8"
+      style={{
+        paddingBottom: `calc(8rem + env(safe-area-inset-bottom) + ${bottomOverlayPx}px)`,
+      }}
+    >
       <header className="mx-auto w-full max-w-xl">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-3">
@@ -476,8 +502,10 @@ export default function Home() {
       </main>
 
       <div
-        className="fixed inset-x-0 bottom-3 z-40 border-t border-zinc-800 bg-zinc-950/85 backdrop-blur"
-        style={{ paddingBottom: "env(safe-area-inset-bottom)" }}
+        className="fixed inset-x-0 z-40 border-t border-zinc-800 bg-zinc-950/85 backdrop-blur"
+        style={{
+          bottom: `calc(env(safe-area-inset-bottom) + ${bottomOverlayPx}px + 12px)`,
+        }}
       >
         <div className="mx-auto w-full max-w-xl px-4 py-3">
           <button
