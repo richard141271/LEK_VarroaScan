@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { usePathname } from "next/navigation";
 import { getAppVersion } from "@/lib/appVersion";
 import { getDeviceInfo } from "@/lib/deviceInfo";
@@ -51,18 +51,53 @@ function normalizeErrorMessage(e: unknown) {
   return raw;
 }
 
+function normalizeSource(value: string | null) {
+  const v = (value ?? "").trim().toLowerCase();
+  if (!v) return null;
+  if (!/^[a-z0-9_-]{1,32}$/.test(v)) return null;
+  return v;
+}
+
+function normalizeType(value: string | null): SubmissionType | null {
+  const v = (value ?? "").trim().toLowerCase();
+  if (v === "bunnbrett" || v === "bunnbrett_foto") return "BUNNBRETT_FOTO";
+  if (v === "kontroll" || v === "kontrollfoto") return "KONTROLLFOTO";
+  return null;
+}
+
+function normalizeReturnUrl(value: string | null) {
+  const raw = (value ?? "").trim();
+  if (!raw || raw.length > 500) return null;
+  try {
+    const url = new URL(raw);
+    if (url.protocol !== "https:" && url.protocol !== "http:") return null;
+    return url.toString();
+  } catch {
+    return null;
+  }
+}
+
 export default function Home() {
   const pathname = usePathname();
   const isOnline = useOnlineStatus();
 
-  const [submissionType, setSubmissionType] = useState<SubmissionType>(
-    "BUNNBRETT_FOTO",
-  );
+  const [submissionType, setSubmissionType] = useState<SubmissionType>(() => {
+    if (typeof window === "undefined") return "BUNNBRETT_FOTO";
+    const params = new URLSearchParams(window.location.search);
+    return normalizeType(params.get("type")) ?? "BUNNBRETT_FOTO";
+  });
   const [note, setNote] = useState("");
   const [images, setImages] = useState<LocalImage[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [didSubmit, setDidSubmit] = useState(false);
+  const [lastSubmission, setLastSubmission] = useState<{
+    id: string;
+    type: SubmissionType;
+    note: string | null;
+    imagesCount: number;
+  } | null>(null);
+  const [bottomOverlayPx, setBottomOverlayPx] = useState(0);
   const [showTech, setShowTech] = useState(false);
   const [lastTech, setLastTech] = useState<string | null>(null);
 
@@ -70,6 +105,43 @@ export default function Home() {
   const basePath = process.env.NEXT_PUBLIC_BASE_PATH ?? "";
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL ?? "";
   const isAdminEnabled = process.env.NEXT_PUBLIC_ENABLE_ADMIN === "true";
+  const sourceParam = useMemo(() => {
+    if (typeof window === "undefined") return null;
+    const params = new URLSearchParams(window.location.search);
+    return normalizeSource(params.get("source"));
+  }, []);
+  const returnUrl = useMemo(() => {
+    if (typeof window === "undefined") return null;
+    const params = new URLSearchParams(window.location.search);
+    const fromParam = normalizeReturnUrl(params.get("returnTo"));
+    if (fromParam) return fromParam;
+    const ref = normalizeReturnUrl(document.referrer);
+    return ref;
+  }, []);
+  const returnLabel = useMemo(() => {
+    if (sourceParam === "biens-vokter") return "Tilbake til LEK-Biens Vokter";
+    return "Tilbake";
+  }, [sourceParam]);
+
+  useEffect(() => {
+    const vv = window.visualViewport;
+    if (!vv) return;
+
+    const update = () => {
+      const next = Math.max(0, Math.round(window.innerHeight - vv.height - vv.offsetTop));
+      setBottomOverlayPx(next);
+    };
+
+    update();
+    vv.addEventListener("resize", update);
+    vv.addEventListener("scroll", update);
+    window.addEventListener("resize", update);
+    return () => {
+      vv.removeEventListener("resize", update);
+      vv.removeEventListener("scroll", update);
+      window.removeEventListener("resize", update);
+    };
+  }, []);
 
   const onPickImages = (files: FileList | null) => {
     setError(null);
@@ -111,6 +183,7 @@ export default function Home() {
     setError(null);
     setIsSubmitting(false);
     setDidSubmit(false);
+    setLastSubmission(null);
     setImages((prev) => {
       for (const img of prev) URL.revokeObjectURL(img.previewUrl);
       return [];
@@ -145,6 +218,7 @@ export default function Home() {
       const userId = session?.user?.id ?? null;
       const userName =
         (session?.user?.user_metadata?.name as string | undefined) ?? null;
+      const noteValue = note.trim() ? note.trim() : null;
 
       const submissionId = crypto.randomUUID();
       const uploadedPaths: string[] = [];
@@ -175,8 +249,8 @@ export default function Home() {
           user_name: userName,
           type: submissionType,
           images: uploadedPaths,
-          note: note.trim() ? note.trim() : null,
-          source: "web",
+          note: noteValue,
+          source: sourceParam ?? "web",
           app_version: appVersion,
           device_info: getDeviceInfo(),
           route: pathname,
@@ -184,6 +258,12 @@ export default function Home() {
         });
       if (insertRes.error) throw insertRes.error;
 
+      setLastSubmission({
+        id: submissionId,
+        type: submissionType,
+        note: noteValue,
+        imagesCount: uploadedPaths.length,
+      });
       setDidSubmit(true);
       setImages((prev) => {
         for (const img of prev) URL.revokeObjectURL(img.previewUrl);
@@ -200,10 +280,22 @@ export default function Home() {
   };
 
   if (didSubmit) {
+    const sentTypeLabel =
+      lastSubmission?.type === "KONTROLLFOTO" ? "Kontrollfoto" : "Bunnbrett foto";
     return (
       <div className="flex flex-col min-h-dvh px-4 pb-10 pt-8">
         <header className="mx-auto w-full max-w-xl">
           <div className="flex items-center justify-between">
+            {returnUrl ? (
+              <a
+                href={returnUrl}
+                className="text-sm font-semibold text-zinc-200 hover:text-zinc-50"
+              >
+                ← {returnLabel}
+              </a>
+            ) : (
+              <div />
+            )}
             <div className="flex items-center gap-3">
               <div className="h-10 w-10 rounded-2xl bg-zinc-800 flex items-center justify-center">
                 <span className="text-sm font-semibold">VS</span>
@@ -225,6 +317,16 @@ export default function Home() {
               Innsendingen er mottatt. Vil du sende inn flere?
             </div>
 
+            {lastSubmission ? (
+              <div className="mt-4 rounded-2xl border border-zinc-800 bg-zinc-950 px-4 py-3 text-sm text-zinc-200">
+                <div>Type: {sentTypeLabel}</div>
+                <div>Antall bilder: {lastSubmission.imagesCount}</div>
+                <div className="mt-2 text-zinc-300">
+                  Kommentar: {lastSubmission.note ? lastSubmission.note : "Ingen"}
+                </div>
+              </div>
+            ) : null}
+
             <div className="mt-6 grid grid-cols-1 gap-3">
               <button
                 type="button"
@@ -233,6 +335,14 @@ export default function Home() {
               >
                 Send flere
               </button>
+              {returnUrl ? (
+                <a
+                  href={returnUrl}
+                  className="h-12 rounded-2xl border border-zinc-700 text-zinc-100 font-semibold flex items-center justify-center active:opacity-90"
+                >
+                  ← {returnLabel}
+                </a>
+              ) : null}
               <a
                 href={`${basePath}/admin/`}
                 className="h-12 rounded-2xl border border-zinc-700 text-zinc-100 font-semibold flex items-center justify-center active:opacity-90"
@@ -247,10 +357,27 @@ export default function Home() {
     );
   }
 
+  const typeLabel = submissionType === "BUNNBRETT_FOTO" ? "Bunnbrett foto" : "Kontrollfoto";
+
   return (
-    <div className="flex flex-col min-h-dvh px-4 pb-10 pt-8">
+    <div
+      className="flex flex-col min-h-[100svh] px-4 pt-8"
+      style={{
+        paddingBottom: `calc(8rem + env(safe-area-inset-bottom) + ${bottomOverlayPx}px)`,
+      }}
+    >
       <header className="mx-auto w-full max-w-xl">
         <div className="flex items-center justify-between">
+          {returnUrl ? (
+            <a
+              href={returnUrl}
+              className="text-sm font-semibold text-zinc-200 hover:text-zinc-50"
+            >
+              ← {returnLabel}
+            </a>
+          ) : (
+            <div />
+          )}
           <div className="flex items-center gap-3">
             <div className="h-10 w-10 rounded-2xl bg-zinc-800 flex items-center justify-center">
               <span className="text-sm font-semibold">VS</span>
@@ -288,35 +415,6 @@ export default function Home() {
           </div>
 
           <div className="mt-6 space-y-5">
-            <div>
-              <div className="text-sm font-semibold text-zinc-200">Type</div>
-              <div className="mt-2 grid grid-cols-2 gap-3">
-                <button
-                  type="button"
-                  onClick={() => setSubmissionType("BUNNBRETT_FOTO")}
-                  className={[
-                    "h-12 rounded-2xl border text-sm font-semibold",
-                    submissionType === "BUNNBRETT_FOTO"
-                      ? "border-amber-300 bg-amber-400 text-zinc-950"
-                      : "border-zinc-700 bg-zinc-950 text-zinc-100",
-                  ].join(" ")}
-                >
-                  Bunnbrett foto
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setSubmissionType("KONTROLLFOTO")}
-                  className={[
-                    "h-12 rounded-2xl border text-sm font-semibold",
-                    submissionType === "KONTROLLFOTO"
-                      ? "border-amber-300 bg-amber-400 text-zinc-950"
-                      : "border-zinc-700 bg-zinc-950 text-zinc-100",
-                  ].join(" ")}
-                >
-                  Kontrollfoto
-                </button>
-              </div>
-            </div>
 
             <div>
               <div className="flex items-center justify-between">
@@ -417,22 +515,64 @@ export default function Home() {
               </div>
             ) : null}
 
-            <button
-              type="button"
-              disabled={isSubmitting}
-              onClick={onSubmit}
-              className="h-12 w-full rounded-2xl bg-amber-400 text-zinc-950 font-semibold active:opacity-90 disabled:opacity-60"
-            >
-              {isSubmitting ? "Sender…" : "Send inn"}
-            </button>
-
-            <div className="text-xs text-zinc-500">
-              Metadata sendes automatisk: tidspunkt, route, device, appversjon,
-              bruker (hvis innlogget).
-            </div>
+            <details className="rounded-2xl border border-zinc-800 bg-zinc-950 px-4 py-3">
+              <summary className="cursor-pointer list-none text-xs font-semibold text-zinc-300">
+                Type (avansert): {typeLabel}
+              </summary>
+              <div className="mt-3 grid grid-cols-2 gap-3">
+                <button
+                  type="button"
+                  onClick={() => setSubmissionType("BUNNBRETT_FOTO")}
+                  className={[
+                    "h-11 rounded-2xl border text-sm font-semibold",
+                    submissionType === "BUNNBRETT_FOTO"
+                      ? "border-amber-300 bg-amber-400 text-zinc-950"
+                      : "border-zinc-700 bg-zinc-950 text-zinc-100",
+                  ].join(" ")}
+                >
+                  Bunnbrett foto
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setSubmissionType("KONTROLLFOTO")}
+                  className={[
+                    "h-11 rounded-2xl border text-sm font-semibold",
+                    submissionType === "KONTROLLFOTO"
+                      ? "border-amber-300 bg-amber-400 text-zinc-950"
+                      : "border-zinc-700 bg-zinc-950 text-zinc-100",
+                  ].join(" ")}
+                >
+                  Kontrollfoto
+                </button>
+              </div>
+              <div className="mt-3 text-xs text-zinc-500">
+                Bruk kontrollfoto hvis dere tester/kalibrerer eller vil skille testbilder fra ekte bunnbrett-bilder.
+              </div>
+            </details>
           </div>
         </div>
       </main>
+
+      <div
+        className="fixed inset-x-0 z-40 border-t border-zinc-800 bg-zinc-950/85 backdrop-blur"
+        style={{
+          bottom: `calc(env(safe-area-inset-bottom) + ${bottomOverlayPx}px + 12px)`,
+        }}
+      >
+        <div className="mx-auto w-full max-w-xl px-4 py-3">
+          <button
+            type="button"
+            disabled={isSubmitting}
+            onClick={onSubmit}
+            className="h-12 w-full rounded-2xl bg-amber-400 text-zinc-950 font-semibold active:opacity-90 disabled:opacity-60"
+          >
+            {isSubmitting ? "Sender…" : "Send inn"}
+          </button>
+          <div className="mt-2 text-center text-[11px] text-zinc-500">
+            Metadata: tidspunkt, route, device, appversjon.
+          </div>
+        </div>
+      </div>
     </div>
   );
 }
