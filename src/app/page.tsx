@@ -110,14 +110,23 @@ export default function Home() {
     const params = new URLSearchParams(window.location.search);
     return normalizeSource(params.get("source"));
   }, []);
+  const defaultReturnUrl =
+    sourceParam === "biens-vokter"
+      ? process.env.NEXT_PUBLIC_BIENS_VOKTER_RETURN_URL ?? ""
+      : "";
   const returnUrl = useMemo(() => {
     if (typeof window === "undefined") return null;
     const params = new URLSearchParams(window.location.search);
-    const fromParam = normalizeReturnUrl(params.get("returnTo"));
-    if (fromParam) return fromParam;
+    const keys = ["returnTo", "return_to", "backTo", "back_to", "return", "back"];
+    for (const key of keys) {
+      const fromParam = normalizeReturnUrl(params.get(key));
+      if (fromParam) return fromParam;
+    }
+    const fromDefault = normalizeReturnUrl(defaultReturnUrl);
+    if (fromDefault) return fromDefault;
     const ref = normalizeReturnUrl(document.referrer);
     return ref;
-  }, []);
+  }, [defaultReturnUrl]);
   const returnLabel = useMemo(() => {
     if (sourceParam === "biens-vokter") return "Tilbake til LEK-Biens Vokter";
     return "Tilbake";
