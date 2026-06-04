@@ -413,6 +413,12 @@ export default function Home() {
           <div className="mt-1 text-sm text-zinc-400">
             Raskt, enkelt og robust. Snakk med utviklerne hvis noe føles rart.
           </div>
+          <div className="mt-4 rounded-2xl border border-zinc-800 bg-zinc-950 px-4 py-3 text-sm text-zinc-300">
+            <div className="font-semibold text-zinc-200">Tips for KI-telling</div>
+            <div className="mt-1">
+              Ta bildet rett ovenfra, sørg for jevnt lys, og få med hele området der midden ligger.
+            </div>
+          </div>
 
           <div className="mt-6 space-y-5">
 
