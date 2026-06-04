@@ -77,6 +77,56 @@ function normalizeReturnUrl(value: string | null) {
   }
 }
 
+function getReturnMeta() {
+  if (typeof window === "undefined") {
+    return { url: null as string | null, label: "Tilbake" };
+  }
+
+  const storageUrlKey = "lek_varroascan_return_url";
+  const storageSourceKey = "lek_varroascan_return_source";
+  const params = new URLSearchParams(window.location.search);
+
+  const sourceFromQuery = normalizeSource(params.get("source"));
+
+  const keys = ["returnTo", "return_to", "backTo", "back_to", "return", "back"];
+  for (const key of keys) {
+    const fromParam = normalizeReturnUrl(params.get(key));
+    if (!fromParam) continue;
+    try {
+      localStorage.setItem(storageUrlKey, fromParam);
+      if (sourceFromQuery) localStorage.setItem(storageSourceKey, sourceFromQuery);
+    } catch {}
+    return {
+      url: fromParam,
+      label:
+        sourceFromQuery === "biens-vokter"
+          ? "Tilbake til LEK-Biens Vokter"
+          : "Tilbake",
+    };
+  }
+
+  let urlFromStorage: string | null = null;
+  let sourceFromStorage: string | null = null;
+  try {
+    urlFromStorage = normalizeReturnUrl(localStorage.getItem(storageUrlKey));
+    sourceFromStorage = normalizeSource(localStorage.getItem(storageSourceKey));
+  } catch {}
+
+  const envDefault =
+    process.env.NEXT_PUBLIC_RETURN_URL ??
+    process.env.NEXT_PUBLIC_BIENS_VOKTER_RETURN_URL ??
+    "";
+  const urlFromEnv = normalizeReturnUrl(envDefault);
+  const urlFromReferrer = normalizeReturnUrl(document.referrer);
+
+  const finalUrl = urlFromStorage ?? urlFromEnv ?? urlFromReferrer;
+  const finalSource = sourceFromQuery ?? sourceFromStorage;
+  const label =
+    finalSource === "biens-vokter" ? "Tilbake til LEK-Biens Vokter" : "Tilbake";
+
+  return { url: finalUrl, label };
+}
+
 export default function Home() {
   const pathname = usePathname();
   const isOnline = useOnlineStatus();
@@ -110,55 +160,24 @@ export default function Home() {
     const params = new URLSearchParams(window.location.search);
     return normalizeSource(params.get("source"));
   }, []);
-  const { returnUrl, returnLabel } = useMemo(() => {
-    if (typeof window === "undefined") {
-      return { returnUrl: null as string | null, returnLabel: "Tilbake" };
+  const [returnMeta, setReturnMeta] = useState(() => getReturnMeta());
+  const returnUrl = returnMeta.url;
+  const returnLabel = returnMeta.label;
+
+  const onBack = () => {
+    if (returnMeta.url) return;
+    if (window.history.length > 1) {
+      window.history.back();
+      return;
     }
-
-    const storageUrlKey = "lek_varroascan_return_url";
-    const storageSourceKey = "lek_varroascan_return_source";
-    const params = new URLSearchParams(window.location.search);
-
-    const keys = ["returnTo", "return_to", "backTo", "back_to", "return", "back"];
-    let urlFromQuery: string | null = null;
-    for (const key of keys) {
-      const candidate = normalizeReturnUrl(params.get(key));
-      if (candidate) {
-        urlFromQuery = candidate;
-        break;
-      }
-    }
-
-    const sourceFromQuery = normalizeSource(params.get("source"));
-
-    if (urlFromQuery) {
-      try {
-        localStorage.setItem(storageUrlKey, urlFromQuery);
-        if (sourceFromQuery) localStorage.setItem(storageSourceKey, sourceFromQuery);
-      } catch {}
-    }
-
-    let urlFromStorage: string | null = null;
-    let sourceFromStorage: string | null = null;
+    const pasted = window.prompt("Lim inn lenke tilbake (https://...)", "");
+    const next = normalizeReturnUrl(pasted);
+    if (!next) return;
     try {
-      urlFromStorage = normalizeReturnUrl(localStorage.getItem(storageUrlKey));
-      sourceFromStorage = normalizeSource(localStorage.getItem(storageSourceKey));
+      localStorage.setItem("lek_varroascan_return_url", next);
     } catch {}
-
-    const envDefault =
-      process.env.NEXT_PUBLIC_RETURN_URL ??
-      process.env.NEXT_PUBLIC_BIENS_VOKTER_RETURN_URL ??
-      "";
-    const urlFromEnv = normalizeReturnUrl(envDefault);
-    const urlFromReferrer = normalizeReturnUrl(document.referrer);
-
-    const finalUrl = urlFromQuery ?? urlFromStorage ?? urlFromEnv ?? urlFromReferrer;
-    const finalSource = sourceFromQuery ?? sourceFromStorage;
-    const label =
-      finalSource === "biens-vokter" ? "Tilbake til LEK-Biens Vokter" : "Tilbake";
-
-    return { returnUrl: finalUrl, returnLabel: label };
-  }, []);
+    setReturnMeta({ url: next, label: "Tilbake" });
+  };
 
   useEffect(() => {
     const vv = window.visualViewport;
@@ -331,7 +350,13 @@ export default function Home() {
                 ← {returnLabel}
               </a>
             ) : (
-              <div />
+              <button
+                type="button"
+                onClick={onBack}
+                className="text-sm font-semibold text-zinc-200 hover:text-zinc-50"
+              >
+                ← Tilbake
+              </button>
             )}
             <div className="flex items-center gap-3">
               <div className="h-10 w-10 rounded-2xl bg-zinc-800 flex items-center justify-center">
@@ -413,7 +438,13 @@ export default function Home() {
               ← {returnLabel}
             </a>
           ) : (
-            <div />
+            <button
+              type="button"
+              onClick={onBack}
+              className="text-sm font-semibold text-zinc-200 hover:text-zinc-50"
+            >
+              ← Tilbake
+            </button>
           )}
           <div className="flex items-center gap-3">
             <div className="h-10 w-10 rounded-2xl bg-zinc-800 flex items-center justify-center">
