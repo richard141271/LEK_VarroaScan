@@ -140,7 +140,9 @@ function getReturnMeta() {
 function isStandaloneApp() {
   if (typeof window === "undefined") return false;
   const nav = window.navigator as Navigator & { standalone?: boolean };
-  if (nav.standalone) return true;
+  const ua = window.navigator.userAgent ?? "";
+  const isIos = /iPad|iPhone|iPod/.test(ua);
+  if (isIos) return Boolean(nav.standalone);
   try {
     return window.matchMedia("(display-mode: standalone)").matches;
   } catch {
@@ -181,6 +183,18 @@ function isBvHintEligibleFromSearch(search: string) {
   return false;
 }
 
+function shouldShowBvAppHintNow() {
+  if (typeof window === "undefined") return false;
+  if (isStandaloneApp()) return false;
+  if (isBvHintEligibleFromSearch(window.location.search)) return true;
+
+  const ref = (document.referrer ?? "").toLowerCase();
+  if (!ref) return false;
+  if (ref.includes("biens-vokter")) return true;
+  if (ref.includes("lekbie.no")) return true;
+  return false;
+}
+
 export default function Home() {
   const pathname = usePathname();
   const isOnline = useOnlineStatus();
@@ -204,11 +218,7 @@ export default function Home() {
   const [bottomOverlayPx, setBottomOverlayPx] = useState(0);
   const [showTech, setShowTech] = useState(false);
   const [lastTech, setLastTech] = useState<string | null>(null);
-  const [showAppNudge, setShowAppNudge] = useState(() => {
-    if (typeof window === "undefined") return false;
-    if (isStandaloneApp()) return false;
-    return isBvHintEligibleFromSearch(window.location.search);
-  });
+  const [showAppNudge, setShowAppNudge] = useState(() => shouldShowBvAppHintNow());
 
   const appVersion = useMemo(() => getAppVersion(), []);
   const basePath = process.env.NEXT_PUBLIC_BASE_PATH ?? "";
@@ -244,13 +254,7 @@ export default function Home() {
 
   useEffect(() => {
     if (typeof window === "undefined") return;
-    if (isStandaloneApp()) {
-      setShowAppNudge(false);
-      return;
-    }
-    if (isFromBiensVokter || isBvHintEligibleFromSearch(window.location.search)) {
-      setShowAppNudge(true);
-    }
+    setShowAppNudge(shouldShowBvAppHintNow() || isFromBiensVokter);
   }, [isFromBiensVokter]);
 
   useEffect(() => {
