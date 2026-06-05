@@ -184,8 +184,12 @@ export default function Home() {
     if (!vv) return;
 
     const update = () => {
-      const next = Math.max(0, Math.round(window.innerHeight - vv.height - vv.offsetTop));
-      setBottomOverlayPx(next);
+      const raw = Math.max(
+        0,
+        Math.round(window.innerHeight - vv.height - vv.offsetTop),
+      );
+      const capped = Math.min(raw, 80);
+      setBottomOverlayPx(capped);
     };
 
     update();
