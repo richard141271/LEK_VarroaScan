@@ -33,7 +33,7 @@ export default function RootLayout({
   const vercelSha = process.env.VERCEL_GIT_COMMIT_SHA;
   const appEnv = process.env.NEXT_PUBLIC_APP_ENV;
   const isStaging =
-    appEnv === "staging" || (vercelEnv === "preview" && vercelBranch === "staging");
+    appEnv === "staging" || vercelBranch === "staging";
   const shortSha = vercelSha ? vercelSha.slice(0, 7) : null;
 
   return (
