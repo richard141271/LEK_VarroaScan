@@ -127,6 +127,17 @@ function getReturnMeta() {
   return { url: finalUrl, label };
 }
 
+function isStandaloneApp() {
+  if (typeof window === "undefined") return false;
+  const nav = window.navigator as Navigator & { standalone?: boolean };
+  if (nav.standalone) return true;
+  try {
+    return window.matchMedia("(display-mode: standalone)").matches;
+  } catch {
+    return false;
+  }
+}
+
 export default function Home() {
   const pathname = usePathname();
   const isOnline = useOnlineStatus();
@@ -150,6 +161,7 @@ export default function Home() {
   const [bottomOverlayPx, setBottomOverlayPx] = useState(0);
   const [showTech, setShowTech] = useState(false);
   const [lastTech, setLastTech] = useState<string | null>(null);
+  const [showAppNudge, setShowAppNudge] = useState(false);
 
   const appVersion = useMemo(() => getAppVersion(), []);
   const basePath = process.env.NEXT_PUBLIC_BASE_PATH ?? "";
@@ -163,6 +175,7 @@ export default function Home() {
   const [returnMeta, setReturnMeta] = useState(() => getReturnMeta());
   const returnUrl = returnMeta.url;
   const returnLabel = returnMeta.label;
+  const isFromBiensVokter = sourceParam === "biens-vokter";
 
   const onBack = () => {
     if (returnMeta.url) return;
@@ -178,6 +191,20 @@ export default function Home() {
     } catch {}
     setReturnMeta({ url: next, label: "Tilbake" });
   };
+
+  useEffect(() => {
+    if (!isFromBiensVokter) return;
+    if (isStandaloneApp()) {
+      setShowAppNudge(false);
+      return;
+    }
+
+    const key = "lek_varroascan_hide_app_nudge";
+    try {
+      if (localStorage.getItem(key) === "1") return;
+    } catch {}
+    setShowAppNudge(true);
+  }, [isFromBiensVokter]);
 
   useEffect(() => {
     const vv = window.visualViewport;
@@ -473,6 +500,44 @@ export default function Home() {
         {!isOnline ? (
           <div className="mt-4 rounded-2xl border border-red-900/60 bg-red-950/40 px-4 py-3 text-sm text-red-200">
             Du er offline. Opplasting krever nett.
+          </div>
+        ) : null}
+
+        {showAppNudge ? (
+          <div className="mt-4 rounded-2xl border border-zinc-800 bg-zinc-950 px-4 py-3 text-sm text-zinc-200">
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <div className="font-semibold text-zinc-100">
+                  Vil du ha “ekte app”-følelse?
+                </div>
+                <div className="mt-1 text-zinc-300">
+                  Legg VarroaScan til på hjemskjermen, og åpne den via ikonet.
+                  Lenker fra LEK-Biens Vokter åpner ellers i nettleseren på iPhone.
+                </div>
+                <details className="mt-2">
+                  <summary className="cursor-pointer list-none text-xs font-semibold text-zinc-300">
+                    Slik gjør du det
+                  </summary>
+                  <div className="mt-2 text-xs text-zinc-400">
+                    Trykk Del (firkant med pil) → Legg til på hjem-skjerm. Åpne
+                    deretter VarroaScan fra ikonet for “app”-modus.
+                  </div>
+                </details>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  const key = "lek_varroascan_hide_app_nudge";
+                  try {
+                    localStorage.setItem(key, "1");
+                  } catch {}
+                  setShowAppNudge(false);
+                }}
+                className="h-9 shrink-0 rounded-2xl border border-zinc-700 bg-zinc-950 px-3 text-xs font-semibold text-zinc-100 active:opacity-90"
+              >
+                Skjul
+              </button>
+            </div>
           </div>
         ) : null}
       </header>
