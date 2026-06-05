@@ -52,9 +52,19 @@ function normalizeErrorMessage(e: unknown) {
 }
 
 function normalizeSource(value: string | null) {
-  const v = (value ?? "").trim().toLowerCase();
+  const raw = (value ?? "").trim().toLowerCase();
+  const v = raw.replace(/\s+/g, "-");
   if (!v) return null;
   if (!/^[a-z0-9_-]{1,32}$/.test(v)) return null;
+  if (
+    v === "biens-vokter" ||
+    v === "biens_vokter" ||
+    v === "lek-biens-vokter" ||
+    v === "lek_biens_vokter" ||
+    v === "bv"
+  ) {
+    return "biens-vokter";
+  }
   return v;
 }
 
@@ -75,6 +85,114 @@ function normalizeReturnUrl(value: string | null) {
   } catch {
     return null;
   }
+}
+
+function getReturnMeta() {
+  if (typeof window === "undefined") {
+    return { url: null as string | null, label: "Tilbake" };
+  }
+
+  const storageUrlKey = "lek_varroascan_return_url";
+  const storageSourceKey = "lek_varroascan_return_source";
+  const params = new URLSearchParams(window.location.search);
+
+  const sourceFromQuery = normalizeSource(params.get("source"));
+
+  const keys = ["returnTo", "return_to", "backTo", "back_to", "return", "back"];
+  for (const key of keys) {
+    const fromParam = normalizeReturnUrl(params.get(key));
+    if (!fromParam) continue;
+    try {
+      localStorage.setItem(storageUrlKey, fromParam);
+      if (sourceFromQuery) localStorage.setItem(storageSourceKey, sourceFromQuery);
+    } catch {}
+    return {
+      url: fromParam,
+      label:
+        sourceFromQuery === "biens-vokter"
+          ? "Tilbake til LEK-Biens Vokter"
+          : "Tilbake",
+    };
+  }
+
+  let urlFromStorage: string | null = null;
+  let sourceFromStorage: string | null = null;
+  try {
+    urlFromStorage = normalizeReturnUrl(localStorage.getItem(storageUrlKey));
+    sourceFromStorage = normalizeSource(localStorage.getItem(storageSourceKey));
+  } catch {}
+
+  const envDefault =
+    process.env.NEXT_PUBLIC_RETURN_URL ??
+    process.env.NEXT_PUBLIC_BIENS_VOKTER_RETURN_URL ??
+    "";
+  const urlFromEnv = normalizeReturnUrl(envDefault);
+  const urlFromReferrer = normalizeReturnUrl(document.referrer);
+
+  const finalUrl = urlFromStorage ?? urlFromEnv ?? urlFromReferrer;
+  const finalSource = sourceFromQuery ?? sourceFromStorage;
+  const label =
+    finalSource === "biens-vokter" ? "Tilbake til LEK-Biens Vokter" : "Tilbake";
+
+  return { url: finalUrl, label };
+}
+
+function isStandaloneApp() {
+  if (typeof window === "undefined") return false;
+  const nav = window.navigator as Navigator & { standalone?: boolean };
+  const ua = window.navigator.userAgent ?? "";
+  const isIos = /iPad|iPhone|iPod/.test(ua);
+  if (isIos) return Boolean(nav.standalone);
+  try {
+    return window.matchMedia("(display-mode: standalone)").matches;
+  } catch {
+    return false;
+  }
+}
+
+function isLikelyFromBiensVokter(returnUrl: string | null, sourceParam: string | null) {
+  if (sourceParam === "biens-vokter") return true;
+  if (!returnUrl) return false;
+  try {
+    const u = new URL(returnUrl);
+    const h = u.hostname.toLowerCase();
+    return h === "lekbie.no" || h.endsWith(".lekbie.no");
+  } catch {
+    return false;
+  }
+}
+
+function isBvHintEligibleFromSearch(search: string) {
+  const params = new URLSearchParams(search);
+  const source = normalizeSource(params.get("source"));
+
+  if (source === "biens-vokter") return true;
+
+  const keys = ["returnTo", "return_to", "backTo", "back_to", "return", "back"];
+  for (const key of keys) {
+    const value = normalizeReturnUrl(params.get(key));
+    if (!value) continue;
+    try {
+      const u = new URL(value);
+      const h = u.hostname.toLowerCase();
+      if (h === "lekbie.no" || h.endsWith(".lekbie.no")) return true;
+      if (h.includes("biens-vokter")) return true;
+    } catch {}
+  }
+
+  return false;
+}
+
+function shouldShowBvAppHintNow() {
+  if (typeof window === "undefined") return false;
+  if (isStandaloneApp()) return false;
+  if (isBvHintEligibleFromSearch(window.location.search)) return true;
+
+  const ref = (document.referrer ?? "").toLowerCase();
+  if (!ref) return false;
+  if (ref.includes("biens-vokter")) return true;
+  if (ref.includes("lekbie.no")) return true;
+  return false;
 }
 
 export default function Home() {
@@ -100,6 +218,8 @@ export default function Home() {
   const [bottomOverlayPx, setBottomOverlayPx] = useState(0);
   const [showTech, setShowTech] = useState(false);
   const [lastTech, setLastTech] = useState<string | null>(null);
+  const [showAppNudge, setShowAppNudge] = useState(() => shouldShowBvAppHintNow());
+  const [isAppNudgeExpanded, setIsAppNudgeExpanded] = useState(false);
 
   const appVersion = useMemo(() => getAppVersion(), []);
   const basePath = process.env.NEXT_PUBLIC_BASE_PATH ?? "";
@@ -110,35 +230,53 @@ export default function Home() {
     const params = new URLSearchParams(window.location.search);
     return normalizeSource(params.get("source"));
   }, []);
-  const returnUrl = useMemo(() => {
-    if (typeof window === "undefined") return null;
-    const params = new URLSearchParams(window.location.search);
-    const fromParam = normalizeReturnUrl(params.get("returnTo"));
-    if (fromParam) return fromParam;
-    const ref = normalizeReturnUrl(document.referrer);
-    return ref;
-  }, []);
-  const returnLabel = useMemo(() => {
-    if (sourceParam === "biens-vokter") return "Tilbake til LEK-Biens Vokter";
-    return "Tilbake";
-  }, [sourceParam]);
+  const [returnMeta, setReturnMeta] = useState(() => getReturnMeta());
+  const returnUrl = returnMeta.url;
+  const returnLabel = returnMeta.label;
+  const isFromBiensVokter = useMemo(
+    () => isLikelyFromBiensVokter(returnUrl, sourceParam),
+    [returnUrl, sourceParam],
+  );
+
+  const onBack = () => {
+    if (returnMeta.url) return;
+    if (window.history.length > 1) {
+      window.history.back();
+      return;
+    }
+    const pasted = window.prompt("Lim inn lenke tilbake (https://...)", "");
+    const next = normalizeReturnUrl(pasted);
+    if (!next) return;
+    try {
+      localStorage.setItem("lek_varroascan_return_url", next);
+    } catch {}
+    setReturnMeta({ url: next, label: "Tilbake" });
+  };
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    setShowAppNudge(shouldShowBvAppHintNow() || isFromBiensVokter);
+  }, [isFromBiensVokter]);
 
   useEffect(() => {
     const vv = window.visualViewport;
     if (!vv) return;
 
     const update = () => {
-      const next = Math.max(0, Math.round(window.innerHeight - vv.height - vv.offsetTop));
-      setBottomOverlayPx(next);
+      const raw = Math.max(
+        0,
+        Math.round(window.innerHeight - vv.height - vv.offsetTop),
+      );
+      const keyboardLikely = raw >= 140;
+      const keyboardLiftPx = keyboardLikely ? Math.min(raw, 360) : 0;
+      setBottomOverlayPx(keyboardLiftPx);
     };
 
     update();
     vv.addEventListener("resize", update);
-    vv.addEventListener("scroll", update);
     window.addEventListener("resize", update);
     return () => {
       vv.removeEventListener("resize", update);
-      vv.removeEventListener("scroll", update);
       window.removeEventListener("resize", update);
     };
   }, []);
@@ -294,7 +432,13 @@ export default function Home() {
                 ← {returnLabel}
               </a>
             ) : (
-              <div />
+              <button
+                type="button"
+                onClick={onBack}
+                className="text-sm font-semibold text-zinc-200 hover:text-zinc-50"
+              >
+                ← Tilbake
+              </button>
             )}
             <div className="flex items-center gap-3">
               <div className="h-10 w-10 rounded-2xl bg-zinc-800 flex items-center justify-center">
@@ -376,7 +520,13 @@ export default function Home() {
               ← {returnLabel}
             </a>
           ) : (
-            <div />
+            <button
+              type="button"
+              onClick={onBack}
+              className="text-sm font-semibold text-zinc-200 hover:text-zinc-50"
+            >
+              ← Tilbake
+            </button>
           )}
           <div className="flex items-center gap-3">
             <div className="h-10 w-10 rounded-2xl bg-zinc-800 flex items-center justify-center">
@@ -403,6 +553,42 @@ export default function Home() {
             Du er offline. Opplasting krever nett.
           </div>
         ) : null}
+
+        {showAppNudge ? (
+          <div className="mt-4 rounded-2xl border border-amber-300 bg-amber-400 px-4 py-2 text-sm text-zinc-950">
+            <div className="flex items-center justify-between gap-3">
+              <button
+                type="button"
+                onClick={() => setIsAppNudgeExpanded((v) => !v)}
+                className="min-w-0 text-left font-semibold underline-offset-4 hover:underline active:opacity-90"
+              >
+                Åpne som “app” på iPhone
+              </button>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setIsAppNudgeExpanded((v) => !v)}
+                  className="h-8 rounded-2xl border border-amber-600 bg-amber-300 px-3 text-xs font-semibold text-zinc-950 active:opacity-90"
+                >
+                  {isAppNudgeExpanded ? "Lukk" : "Vis"}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setShowAppNudge(false)}
+                  className="h-8 rounded-2xl border border-amber-600 bg-amber-300 px-3 text-xs font-semibold text-zinc-950 active:opacity-90"
+                >
+                  Skjul
+                </button>
+              </div>
+            </div>
+            {isAppNudgeExpanded ? (
+              <div className="mt-2 text-xs">
+                Trykk Del (firkant med pil) → Legg til på hjem-skjerm. Åpne
+                deretter VarroaScan fra ikonet for “app”-modus.
+              </div>
+            ) : null}
+          </div>
+        ) : null}
       </header>
 
       <main className="mx-auto mt-6 w-full max-w-xl">
@@ -412,6 +598,12 @@ export default function Home() {
           </div>
           <div className="mt-1 text-sm text-zinc-400">
             Raskt, enkelt og robust. Snakk med utviklerne hvis noe føles rart.
+          </div>
+          <div className="mt-4 rounded-2xl border border-zinc-800 bg-zinc-950 px-4 py-3 text-sm text-zinc-300">
+            <div className="font-semibold text-zinc-200">Tips for KI-telling</div>
+            <div className="mt-1">
+              Ta bildet rett ovenfra, sørg for jevnt lys, og få med hele området der midden ligger.
+            </div>
           </div>
 
           <div className="mt-6 space-y-5">
@@ -498,6 +690,14 @@ export default function Home() {
                 <div>route: {pathname}</div>
                 <div>appVersion: {appVersion}</div>
                 <div>online: {String(isOnline)}</div>
+                <div>displayModeStandalone: {String(isStandaloneApp())}</div>
+                <div>
+                  bvHintEligible:{" "}
+                  {typeof window === "undefined"
+                    ? "false"
+                    : String(isBvHintEligibleFromSearch(window.location.search))}
+                </div>
+                <div>source: {sourceParam ?? "—"}</div>
                 <div>
                   supabaseUrl:{" "}
                   {supabaseUrl
@@ -554,9 +754,9 @@ export default function Home() {
       </main>
 
       <div
-        className="fixed inset-x-0 z-40 border-t border-zinc-800 bg-zinc-950/85 backdrop-blur"
+        className="fixed inset-x-0 z-40 border-t border-zinc-800 bg-zinc-950"
         style={{
-          bottom: `calc(env(safe-area-inset-bottom) + ${bottomOverlayPx}px + 12px)`,
+          bottom: `calc(env(safe-area-inset-bottom) + ${bottomOverlayPx}px)`,
         }}
       >
         <div className="mx-auto w-full max-w-xl px-4 py-3">

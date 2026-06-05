@@ -12,7 +12,19 @@ type VarroaSubmission = {
   note: string | null;
   images: string[];
   status: "NY" | "UNDER_ARBEID" | "ARKIVERT";
+  ai_status?: "PENDING" | "RUNNING" | "DONE" | "FAILED" | null;
+  ai_count?: number | null;
 };
+
+function isMissingAiColumnsError(value: unknown) {
+  if (!value || typeof value !== "object") return false;
+  if (!("message" in value)) return false;
+  const message = String((value as { message?: unknown }).message ?? "");
+  return (
+    message.includes("does not exist") &&
+    (message.includes("ai_status") || message.includes("ai_count"))
+  );
+}
 
 function formatDateTime(value: string) {
   const dt = new Date(value);
@@ -59,15 +71,32 @@ export default function AdminArchivePage() {
         return;
       }
 
-      const res = await supabase
+      const selectWithAi =
+        "id,created_at,user_name,type,note,images,status,ai_status,ai_count";
+      const selectWithoutAi = "id,created_at,user_name,type,note,images,status";
+
+      const resWithAi = await supabase
         .from("varroa_submissions")
-        .select("id,created_at,user_name,type,note,images,status")
+        .select(selectWithAi)
         .eq("status", "ARKIVERT")
         .order("created_at", { ascending: false })
         .limit(200);
 
-      if (res.error) throw res.error;
-      setItems((res.data ?? []) as VarroaSubmission[]);
+      if (resWithAi.error && isMissingAiColumnsError(resWithAi.error)) {
+        const resWithoutAi = await supabase
+          .from("varroa_submissions")
+          .select(selectWithoutAi)
+          .eq("status", "ARKIVERT")
+          .order("created_at", { ascending: false })
+          .limit(200);
+
+        if (resWithoutAi.error) throw resWithoutAi.error;
+        setItems((resWithoutAi.data ?? []) as VarroaSubmission[]);
+        return;
+      }
+
+      if (resWithAi.error) throw resWithAi.error;
+      setItems((resWithAi.data ?? []) as VarroaSubmission[]);
     } catch (e) {
       const message =
         typeof e === "object" && e && "message" in e
@@ -192,6 +221,8 @@ export default function AdminArchivePage() {
                       {s.user_name ? ` • ${s.user_name}` : ""}
                       {s.images?.length ? ` • ${s.images.length} bilder` : ""}
                       {s.status ? ` • ${s.status}` : ""}
+                      {s.ai_status ? ` • AI ${s.ai_status}` : ""}
+                      {typeof s.ai_count === "number" ? ` • ${s.ai_count} midd` : ""}
                     </div>
                     {s.note ? (
                       <div className="mt-2 text-sm text-zinc-300">
