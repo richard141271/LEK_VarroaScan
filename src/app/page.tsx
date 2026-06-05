@@ -52,9 +52,19 @@ function normalizeErrorMessage(e: unknown) {
 }
 
 function normalizeSource(value: string | null) {
-  const v = (value ?? "").trim().toLowerCase();
+  const raw = (value ?? "").trim().toLowerCase();
+  const v = raw.replace(/\s+/g, "-");
   if (!v) return null;
   if (!/^[a-z0-9_-]{1,32}$/.test(v)) return null;
+  if (
+    v === "biens-vokter" ||
+    v === "biens_vokter" ||
+    v === "lek-biens-vokter" ||
+    v === "lek_biens_vokter" ||
+    v === "bv"
+  ) {
+    return "biens-vokter";
+  }
   return v;
 }
 
@@ -138,6 +148,18 @@ function isStandaloneApp() {
   }
 }
 
+function isLikelyFromBiensVokter(returnUrl: string | null, sourceParam: string | null) {
+  if (sourceParam === "biens-vokter") return true;
+  if (!returnUrl) return false;
+  try {
+    const u = new URL(returnUrl);
+    const h = u.hostname.toLowerCase();
+    return h === "lekbie.no" || h.endsWith(".lekbie.no");
+  } catch {
+    return false;
+  }
+}
+
 export default function Home() {
   const pathname = usePathname();
   const isOnline = useOnlineStatus();
@@ -175,7 +197,10 @@ export default function Home() {
   const [returnMeta, setReturnMeta] = useState(() => getReturnMeta());
   const returnUrl = returnMeta.url;
   const returnLabel = returnMeta.label;
-  const isFromBiensVokter = sourceParam === "biens-vokter";
+  const isFromBiensVokter = useMemo(
+    () => isLikelyFromBiensVokter(returnUrl, sourceParam),
+    [returnUrl, sourceParam],
+  );
 
   const onBack = () => {
     if (returnMeta.url) return;
@@ -215,7 +240,7 @@ export default function Home() {
         0,
         Math.round(window.innerHeight - vv.height - vv.offsetTop),
       );
-      const capped = Math.min(raw, 80);
+      const capped = Math.min(raw, 56);
       setBottomOverlayPx(capped);
     };
 
