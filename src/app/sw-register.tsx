@@ -9,7 +9,8 @@ export function ServiceWorkerRegister() {
     const onLoad = async () => {
       try {
         const basePath = process.env.NEXT_PUBLIC_BASE_PATH ?? "";
-        await navigator.serviceWorker.register(`${basePath}/sw.js`);
+        const reg = await navigator.serviceWorker.register(`${basePath}/sw.js`);
+        await reg.update();
       } catch {
         return;
       }
