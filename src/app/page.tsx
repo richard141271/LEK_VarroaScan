@@ -160,39 +160,30 @@ function isLikelyFromBiensVokter(returnUrl: string | null, sourceParam: string |
   }
 }
 
+function isBvHintEligibleFromSearch(search: string) {
+  const params = new URLSearchParams(search);
+  const source = normalizeSource(params.get("source"));
+
+  if (source === "biens-vokter") return true;
+
+  const keys = ["returnTo", "return_to", "backTo", "back_to", "return", "back"];
+  for (const key of keys) {
+    const value = normalizeReturnUrl(params.get(key));
+    if (!value) continue;
+    try {
+      const u = new URL(value);
+      const h = u.hostname.toLowerCase();
+      if (h === "lekbie.no" || h.endsWith(".lekbie.no")) return true;
+      if (h.includes("biens-vokter")) return true;
+    } catch {}
+  }
+
+  return false;
+}
+
 export default function Home() {
   const pathname = usePathname();
   const isOnline = useOnlineStatus();
-
-  const bvHintEligible = useMemo(() => {
-    if (typeof window === "undefined") return false;
-    const params = new URLSearchParams(window.location.search);
-    const source = normalizeSource(params.get("source"));
-
-    const keys = ["returnTo", "return_to", "backTo", "back_to", "return", "back"];
-    let returnTo: string | null = null;
-    for (const key of keys) {
-      const v = normalizeReturnUrl(params.get(key));
-      if (!v) continue;
-      returnTo = v;
-      break;
-    }
-
-    if (source === "biens-vokter") return true;
-    if (!returnTo) return false;
-    try {
-      const u = new URL(returnTo);
-      const h = u.hostname.toLowerCase();
-      return (
-        h === "lekbie.no" ||
-        h.endsWith(".lekbie.no") ||
-        h === "lek-biens-vokter-staging.vercel.app" ||
-        h.endsWith("-biens-vokter-staging.vercel.app")
-      );
-    } catch {
-      return false;
-    }
-  }, []);
 
   const [submissionType, setSubmissionType] = useState<SubmissionType>(() => {
     if (typeof window === "undefined") return "BUNNBRETT_FOTO";
@@ -213,7 +204,11 @@ export default function Home() {
   const [bottomOverlayPx, setBottomOverlayPx] = useState(0);
   const [showTech, setShowTech] = useState(false);
   const [lastTech, setLastTech] = useState<string | null>(null);
-  const [showAppNudge, setShowAppNudge] = useState(false);
+  const [showAppNudge, setShowAppNudge] = useState(() => {
+    if (typeof window === "undefined") return false;
+    if (isStandaloneApp()) return false;
+    return isBvHintEligibleFromSearch(window.location.search);
+  });
 
   const appVersion = useMemo(() => getAppVersion(), []);
   const basePath = process.env.NEXT_PUBLIC_BASE_PATH ?? "";
@@ -248,13 +243,15 @@ export default function Home() {
   };
 
   useEffect(() => {
-    if (!bvHintEligible && !isFromBiensVokter) return;
+    if (typeof window === "undefined") return;
     if (isStandaloneApp()) {
       setShowAppNudge(false);
       return;
     }
-    setShowAppNudge(true);
-  }, [bvHintEligible, isFromBiensVokter]);
+    if (isFromBiensVokter || isBvHintEligibleFromSearch(window.location.search)) {
+      setShowAppNudge(true);
+    }
+  }, [isFromBiensVokter]);
 
   useEffect(() => {
     const vv = window.visualViewport;
@@ -509,38 +506,6 @@ export default function Home() {
       }}
     >
       <header className="mx-auto w-full max-w-xl">
-        {showAppNudge ? (
-          <div className="sticky top-0 z-40 -mx-4 mb-4 border-b border-zinc-800 bg-zinc-950 px-4 py-3 text-sm text-zinc-200">
-            <div className="flex items-start justify-between gap-3">
-              <div className="min-w-0">
-                <div className="font-semibold text-zinc-100">
-                  Åpne som “app” på iPhone
-                </div>
-                <div className="mt-1 text-zinc-300">
-                  Legg VarroaScan til på hjemskjermen, og åpne den via ikonet.
-                  Lenker åpnes ellers i nettleseren.
-                </div>
-                <details className="mt-2">
-                  <summary className="cursor-pointer list-none text-xs font-semibold text-zinc-300">
-                    Slik gjør du det
-                  </summary>
-                  <div className="mt-2 text-xs text-zinc-400">
-                    Trykk Del (firkant med pil) → Legg til på hjem-skjerm. Åpne
-                    deretter VarroaScan fra ikonet for “app”-modus.
-                  </div>
-                </details>
-              </div>
-              <button
-                type="button"
-                onClick={() => setShowAppNudge(false)}
-                className="h-9 shrink-0 rounded-2xl border border-zinc-700 bg-zinc-950 px-3 text-xs font-semibold text-zinc-100 active:opacity-90"
-              >
-                Skjul
-              </button>
-            </div>
-          </div>
-        ) : null}
-
         <div className="flex items-center justify-between">
           {returnUrl ? (
             <a
@@ -581,6 +546,36 @@ export default function Home() {
         {!isOnline ? (
           <div className="mt-4 rounded-2xl border border-red-900/60 bg-red-950/40 px-4 py-3 text-sm text-red-200">
             Du er offline. Opplasting krever nett.
+          </div>
+        ) : null}
+
+        {showAppNudge ? (
+          <div className="mt-4 rounded-2xl border border-amber-300 bg-amber-400 px-4 py-3 text-sm text-zinc-950">
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <div className="font-semibold">Åpne som “app” på iPhone</div>
+                <div className="mt-1">
+                  Legg VarroaScan til på hjemskjermen, og åpne den via ikonet.
+                  Lenker åpnes ellers i nettleseren.
+                </div>
+                <details className="mt-2">
+                  <summary className="cursor-pointer list-none text-xs font-semibold">
+                    Slik gjør du det
+                  </summary>
+                  <div className="mt-2 text-xs">
+                    Trykk Del (firkant med pil) → Legg til på hjem-skjerm. Åpne
+                    deretter VarroaScan fra ikonet for “app”-modus.
+                  </div>
+                </details>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowAppNudge(false)}
+                className="h-9 shrink-0 rounded-2xl border border-amber-600 bg-amber-300 px-3 text-xs font-semibold text-zinc-950 active:opacity-90"
+              >
+                Skjul
+              </button>
+            </div>
           </div>
         ) : null}
       </header>
@@ -684,6 +679,14 @@ export default function Home() {
                 <div>route: {pathname}</div>
                 <div>appVersion: {appVersion}</div>
                 <div>online: {String(isOnline)}</div>
+                <div>displayModeStandalone: {String(isStandaloneApp())}</div>
+                <div>
+                  bvHintEligible:{" "}
+                  {typeof window === "undefined"
+                    ? "false"
+                    : String(isBvHintEligibleFromSearch(window.location.search))}
+                </div>
+                <div>source: {sourceParam ?? "—"}</div>
                 <div>
                   supabaseUrl:{" "}
                   {supabaseUrl
