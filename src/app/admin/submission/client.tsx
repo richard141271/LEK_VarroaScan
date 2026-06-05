@@ -19,6 +19,14 @@ type VarroaSubmission = {
   route: string | null;
   status: "NY" | "UNDER_ARBEID" | "ARKIVERT";
   admin_comment: string | null;
+  ai_status?: "PENDING" | "RUNNING" | "DONE" | "FAILED";
+  ai_started_at?: string | null;
+  ai_finished_at?: string | null;
+  ai_error?: string | null;
+  ai_model?: string | null;
+  ai_count?: number | null;
+  ai_confidence?: number | null;
+  ai_result?: unknown;
 };
 
 type SignedImage = { path: string; url: string };
@@ -27,6 +35,27 @@ function formatDateTime(value: string) {
   const dt = new Date(value);
   if (Number.isNaN(dt.getTime())) return value;
   return dt.toLocaleString("no-NO");
+}
+
+function isMissingAiColumnsError(value: unknown) {
+  if (!value || typeof value !== "object") return false;
+  if (!("message" in value)) return false;
+  const message = String((value as { message?: unknown }).message ?? "");
+  return (
+    message.includes("does not exist") &&
+    (message.includes("ai_status") ||
+      message.includes("ai_count") ||
+      message.includes("ai_result"))
+  );
+}
+
+function formatJson(value: unknown) {
+  if (value == null) return "";
+  try {
+    return JSON.stringify(value, null, 2);
+  } catch {
+    return String(value);
+  }
 }
 
 export function AdminSubmissionClient() {
@@ -41,9 +70,12 @@ export function AdminSubmissionClient() {
   const [images, setImages] = useState<SignedImage[]>([]);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
+  const [hasAiColumns, setHasAiColumns] = useState(false);
 
   const [status, setStatus] = useState<VarroaSubmission["status"]>("NY");
   const [adminComment, setAdminComment] = useState("");
+  const [aiStatus, setAiStatus] =
+    useState<NonNullable<VarroaSubmission["ai_status"]>>("PENDING");
   const [saveError, setSaveError] = useState<string | null>(null);
   const [isSaving, setIsSaving] = useState(false);
   const [saveOk, setSaveOk] = useState<string | null>(null);
@@ -86,26 +118,75 @@ export function AdminSubmissionClient() {
         return;
       }
 
-      const res = await supabase
+      const selectWithAi =
+        "id,created_at,user_id,user_name,type,note,images,source,app_version,device_info,route,status,admin_comment,ai_status,ai_started_at,ai_finished_at,ai_error,ai_model,ai_count,ai_confidence,ai_result";
+      const selectWithoutAi =
+        "id,created_at,user_id,user_name,type,note,images,source,app_version,device_info,route,status,admin_comment";
+
+      const resWithAi = await supabase
         .from("varroa_submissions")
-        .select(
-          "id,created_at,user_id,user_name,type,note,images,source,app_version,device_info,route,status,admin_comment",
-        )
+        .select(selectWithAi)
         .eq("id", id)
         .maybeSingle();
 
-      if (res.error) throw res.error;
-      if (!res.data) {
+      if (resWithAi.error && isMissingAiColumnsError(resWithAi.error)) {
+        setHasAiColumns(false);
+        const resWithoutAi = await supabase
+          .from("varroa_submissions")
+          .select(selectWithoutAi)
+          .eq("id", id)
+          .maybeSingle();
+
+        if (resWithoutAi.error) throw resWithoutAi.error;
+        if (!resWithoutAi.data) {
+          setLoadError("Fant ikke innsendelsen.");
+          setItem(null);
+          setImages([]);
+          return;
+        }
+
+        const loaded = resWithoutAi.data as VarroaSubmission;
+        setItem(loaded);
+        setStatus(loaded.status);
+        setAdminComment(loaded.admin_comment ?? "");
+        setAiStatus(loaded.ai_status ?? "PENDING");
+
+        const imagePaths = Array.isArray(loaded.images) ? loaded.images : [];
+        if (imagePaths.length === 0) {
+          setImages([]);
+          return;
+        }
+
+        const signedRes = await supabase.storage
+          .from("varroa-submissions")
+          .createSignedUrls(imagePaths, 60 * 30);
+
+        if (signedRes.error) throw signedRes.error;
+
+        const signedImages: SignedImage[] = (signedRes.data ?? []).flatMap((x) => {
+          if (!x) return [];
+          if (typeof x.path !== "string") return [];
+          if (typeof x.signedUrl !== "string") return [];
+          return [{ path: x.path, url: x.signedUrl }];
+        });
+        setImages(signedImages);
+        return;
+      }
+
+      setHasAiColumns(true);
+      if (resWithAi.error) throw resWithAi.error;
+      if (!resWithAi.data) {
         setLoadError("Fant ikke innsendelsen.");
         setItem(null);
         setImages([]);
         return;
       }
 
-      const loaded = res.data as VarroaSubmission;
+      const loaded = resWithAi.data as VarroaSubmission;
       setItem(loaded);
       setStatus(loaded.status);
       setAdminComment(loaded.admin_comment ?? "");
+      setAiStatus(loaded.ai_status ?? "PENDING");
 
       const imagePaths = Array.isArray(loaded.images) ? loaded.images : [];
       if (imagePaths.length === 0) {
@@ -165,16 +246,72 @@ export function AdminSubmissionClient() {
 
     setIsSaving(true);
     try {
+      const updatePatch: Record<string, unknown> = {
+        status,
+        admin_comment: adminComment.trim() ? adminComment.trim() : null,
+      };
+      if (hasAiColumns) {
+        updatePatch.ai_status = aiStatus;
+      }
+
       const res = await supabase
         .from("varroa_submissions")
-        .update({
-          status,
-          admin_comment: adminComment.trim() ? adminComment.trim() : null,
-        })
+        .update(updatePatch)
         .eq("id", item.id);
 
       if (res.error) throw res.error;
       setSaveOk("Lagret.");
+      await reload();
+    } catch (e) {
+      const message =
+        typeof e === "object" && e && "message" in e
+          ? String((e as { message?: unknown }).message)
+          : "Ukjent feil";
+      setSaveError(message);
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  const queueAi = async () => {
+    setSaveError(null);
+    setSaveOk(null);
+
+    if (!isOnline) {
+      setSaveError("Du er offline. Kan ikke sette i kø.");
+      return;
+    }
+    if (!supabase) {
+      setSaveError("Mangler Supabase-konfig (NEXT_PUBLIC_SUPABASE_*).");
+      return;
+    }
+    if (!item) {
+      setSaveError("Ingenting å oppdatere.");
+      return;
+    }
+    if (!hasAiColumns) {
+      setSaveError("KI-felter er ikke aktivert i databasen ennå.");
+      return;
+    }
+
+    setIsSaving(true);
+    try {
+      const res = await supabase
+        .from("varroa_submissions")
+        .update({
+          ai_status: "PENDING",
+          ai_started_at: null,
+          ai_finished_at: null,
+          ai_error: null,
+          ai_model: null,
+          ai_count: null,
+          ai_confidence: null,
+          ai_result: null,
+        })
+        .eq("id", item.id);
+
+      if (res.error) throw res.error;
+      setSaveOk("Satt i KI-kø.");
       await reload();
     } catch (e) {
       const message =
@@ -294,6 +431,56 @@ export function AdminSubmissionClient() {
                 </div>
               ) : null}
 
+              {hasAiColumns ? (
+                <div className="grid grid-cols-1 gap-3 rounded-2xl border border-zinc-800 bg-zinc-950 p-4">
+                  <div className="flex items-center justify-between gap-4">
+                    <div>
+                      <div className="text-sm font-semibold text-zinc-200">
+                        KI
+                      </div>
+                      <div className="mt-1 text-xs text-zinc-400">
+                        Status: {item.ai_status ?? "PENDING"}
+                        {typeof item.ai_count === "number"
+                          ? ` • ${item.ai_count} midd`
+                          : ""}
+                        {typeof item.ai_confidence === "number"
+                          ? ` • ${(item.ai_confidence * 100).toFixed(0)}%`
+                          : ""}
+                      </div>
+                      <div className="mt-1 text-xs text-zinc-500">
+                        {item.ai_model ? `Modell: ${item.ai_model}` : ""}
+                        {item.ai_started_at
+                          ? ` • Start: ${formatDateTime(item.ai_started_at)}`
+                          : ""}
+                        {item.ai_finished_at
+                          ? ` • Ferdig: ${formatDateTime(item.ai_finished_at)}`
+                          : ""}
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={queueAi}
+                      disabled={isSaving}
+                      className="h-10 rounded-2xl bg-amber-400 px-4 text-sm font-semibold text-zinc-950 active:opacity-90 disabled:opacity-60"
+                    >
+                      Kjør KI
+                    </button>
+                  </div>
+
+                  {item.ai_error ? (
+                    <div className="rounded-2xl border border-red-900/60 bg-red-950/40 px-4 py-3 text-sm text-red-200 whitespace-pre-wrap">
+                      {item.ai_error}
+                    </div>
+                  ) : null}
+
+                  {item.ai_result ? (
+                    <pre className="overflow-auto rounded-2xl border border-zinc-800 bg-zinc-950 px-4 py-3 text-xs text-zinc-200">
+                      {formatJson(item.ai_result)}
+                    </pre>
+                  ) : null}
+                </div>
+              ) : null}
+
               <div className="grid grid-cols-1 gap-3 rounded-2xl border border-zinc-800 bg-zinc-950 p-4">
                 <div>
                   <div className="text-sm font-semibold text-zinc-200">Status</div>
@@ -309,6 +496,30 @@ export function AdminSubmissionClient() {
                     <option value="ARKIVERT">ARKIVERT</option>
                   </select>
                 </div>
+
+                {hasAiColumns ? (
+                  <div>
+                    <div className="text-sm font-semibold text-zinc-200">
+                      KI-status
+                    </div>
+                    <select
+                      value={aiStatus}
+                      onChange={(e) =>
+                        setAiStatus(
+                          e.target.value as NonNullable<
+                            VarroaSubmission["ai_status"]
+                          >,
+                        )
+                      }
+                      className="mt-2 h-12 w-full rounded-2xl border border-zinc-700 bg-zinc-950 px-4 text-sm text-zinc-50 focus:outline-none focus:ring-2 focus:ring-amber-300"
+                    >
+                      <option value="PENDING">PENDING</option>
+                      <option value="RUNNING">RUNNING</option>
+                      <option value="DONE">DONE</option>
+                      <option value="FAILED">FAILED</option>
+                    </select>
+                  </div>
+                ) : null}
 
                 <div>
                   <div className="text-sm font-semibold text-zinc-200">
@@ -350,4 +561,3 @@ export function AdminSubmissionClient() {
     </div>
   );
 }
-

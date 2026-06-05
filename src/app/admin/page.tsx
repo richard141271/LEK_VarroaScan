@@ -12,7 +12,19 @@ type VarroaSubmission = {
   note: string | null;
   images: string[];
   status: "NY" | "UNDER_ARBEID" | "ARKIVERT";
+  ai_status?: "PENDING" | "RUNNING" | "DONE" | "FAILED" | null;
+  ai_count?: number | null;
 };
+
+function isMissingAiColumnsError(value: unknown) {
+  if (!value || typeof value !== "object") return false;
+  if (!("message" in value)) return false;
+  const message = String((value as { message?: unknown }).message ?? "");
+  return (
+    message.includes("does not exist") &&
+    (message.includes("ai_status") || message.includes("ai_count"))
+  );
+}
 
 function formatDateTime(value: string) {
   const dt = new Date(value);
@@ -67,15 +79,32 @@ export default function AdminInboxPage() {
         return;
       }
 
-      const inboxRes = await supabase
+      const selectWithAi =
+        "id,created_at,user_name,type,note,images,status,ai_status,ai_count";
+      const selectWithoutAi = "id,created_at,user_name,type,note,images,status";
+
+      const inboxResWithAi = await supabase
         .from("varroa_submissions")
-        .select("id,created_at,user_name,type,note,images,status")
+        .select(selectWithAi)
         .neq("status", "ARKIVERT")
         .order("created_at", { ascending: false })
         .limit(100);
 
-      if (inboxRes.error) throw inboxRes.error;
-      setItems((inboxRes.data ?? []) as VarroaSubmission[]);
+      if (inboxResWithAi.error && isMissingAiColumnsError(inboxResWithAi.error)) {
+        const inboxResWithoutAi = await supabase
+          .from("varroa_submissions")
+          .select(selectWithoutAi)
+          .neq("status", "ARKIVERT")
+          .order("created_at", { ascending: false })
+          .limit(100);
+
+        if (inboxResWithoutAi.error) throw inboxResWithoutAi.error;
+        setItems((inboxResWithoutAi.data ?? []) as VarroaSubmission[]);
+        return;
+      }
+
+      if (inboxResWithAi.error) throw inboxResWithAi.error;
+      setItems((inboxResWithAi.data ?? []) as VarroaSubmission[]);
     } catch (e) {
       const message =
         typeof e === "object" && e && "message" in e
@@ -311,6 +340,8 @@ export default function AdminInboxPage() {
                         {s.user_name ? ` • ${s.user_name}` : ""}
                         {s.images?.length ? ` • ${s.images.length} bilder` : ""}
                         {s.status ? ` • ${s.status}` : ""}
+                        {s.ai_status ? ` • AI ${s.ai_status}` : ""}
+                        {typeof s.ai_count === "number" ? ` • ${s.ai_count} midd` : ""}
                       </div>
                       {s.note ? (
                         <div className="mt-2 text-sm text-zinc-300">
