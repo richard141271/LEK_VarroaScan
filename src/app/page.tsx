@@ -219,6 +219,7 @@ export default function Home() {
   const [showTech, setShowTech] = useState(false);
   const [lastTech, setLastTech] = useState<string | null>(null);
   const [showAppNudge, setShowAppNudge] = useState(() => shouldShowBvAppHintNow());
+  const [isAppNudgeExpanded, setIsAppNudgeExpanded] = useState(false);
 
   const appVersion = useMemo(() => getAppVersion(), []);
   const basePath = process.env.NEXT_PUBLIC_BASE_PATH ?? "";
@@ -554,32 +555,38 @@ export default function Home() {
         ) : null}
 
         {showAppNudge ? (
-          <div className="mt-4 rounded-2xl border border-amber-300 bg-amber-400 px-4 py-3 text-sm text-zinc-950">
-            <div className="flex items-start justify-between gap-3">
-              <div className="min-w-0">
-                <div className="font-semibold">Åpne som “app” på iPhone</div>
-                <div className="mt-1">
-                  Legg VarroaScan til på hjemskjermen, og åpne den via ikonet.
-                  Lenker åpnes ellers i nettleseren.
-                </div>
-                <details className="mt-2">
-                  <summary className="cursor-pointer list-none text-xs font-semibold">
-                    Slik gjør du det
-                  </summary>
-                  <div className="mt-2 text-xs">
-                    Trykk Del (firkant med pil) → Legg til på hjem-skjerm. Åpne
-                    deretter VarroaScan fra ikonet for “app”-modus.
-                  </div>
-                </details>
-              </div>
+          <div className="mt-4 rounded-2xl border border-amber-300 bg-amber-400 px-4 py-2 text-sm text-zinc-950">
+            <div className="flex items-center justify-between gap-3">
               <button
                 type="button"
-                onClick={() => setShowAppNudge(false)}
-                className="h-9 shrink-0 rounded-2xl border border-amber-600 bg-amber-300 px-3 text-xs font-semibold text-zinc-950 active:opacity-90"
+                onClick={() => setIsAppNudgeExpanded((v) => !v)}
+                className="min-w-0 text-left font-semibold underline-offset-4 hover:underline active:opacity-90"
               >
-                Skjul
+                Åpne som “app” på iPhone
               </button>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setIsAppNudgeExpanded((v) => !v)}
+                  className="h-8 rounded-2xl border border-amber-600 bg-amber-300 px-3 text-xs font-semibold text-zinc-950 active:opacity-90"
+                >
+                  {isAppNudgeExpanded ? "Lukk" : "Vis"}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setShowAppNudge(false)}
+                  className="h-8 rounded-2xl border border-amber-600 bg-amber-300 px-3 text-xs font-semibold text-zinc-950 active:opacity-90"
+                >
+                  Skjul
+                </button>
+              </div>
             </div>
+            {isAppNudgeExpanded ? (
+              <div className="mt-2 text-xs">
+                Trykk Del (firkant med pil) → Legg til på hjem-skjerm. Åpne
+                deretter VarroaScan fra ikonet for “app”-modus.
+              </div>
+            ) : null}
           </div>
         ) : null}
       </header>
