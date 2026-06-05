@@ -223,11 +223,6 @@ export default function Home() {
       setShowAppNudge(false);
       return;
     }
-
-    const key = "lek_varroascan_hide_app_nudge";
-    try {
-      if (localStorage.getItem(key) === "1") return;
-    } catch {}
     setShowAppNudge(true);
   }, [isFromBiensVokter]);
 
@@ -240,17 +235,16 @@ export default function Home() {
         0,
         Math.round(window.innerHeight - vv.height - vv.offsetTop),
       );
-      const capped = Math.min(raw, 56);
-      setBottomOverlayPx(capped);
+      const keyboardLikely = raw >= 140;
+      const keyboardLiftPx = keyboardLikely ? Math.min(raw, 360) : 0;
+      setBottomOverlayPx(keyboardLiftPx);
     };
 
     update();
     vv.addEventListener("resize", update);
-    vv.addEventListener("scroll", update);
     window.addEventListener("resize", update);
     return () => {
       vv.removeEventListener("resize", update);
-      vv.removeEventListener("scroll", update);
       window.removeEventListener("resize", update);
     };
   }, []);
@@ -533,7 +527,7 @@ export default function Home() {
             <div className="flex items-start justify-between gap-3">
               <div className="min-w-0">
                 <div className="font-semibold text-zinc-100">
-                  Vil du ha “ekte app”-følelse?
+                  Åpne som “app” på iPhone
                 </div>
                 <div className="mt-1 text-zinc-300">
                   Legg VarroaScan til på hjemskjermen, og åpne den via ikonet.
@@ -552,10 +546,6 @@ export default function Home() {
               <button
                 type="button"
                 onClick={() => {
-                  const key = "lek_varroascan_hide_app_nudge";
-                  try {
-                    localStorage.setItem(key, "1");
-                  } catch {}
                   setShowAppNudge(false);
                 }}
                 className="h-9 shrink-0 rounded-2xl border border-zinc-700 bg-zinc-950 px-3 text-xs font-semibold text-zinc-100 active:opacity-90"
@@ -722,9 +712,9 @@ export default function Home() {
       </main>
 
       <div
-        className="fixed inset-x-0 z-40 border-t border-zinc-800 bg-zinc-950/85 backdrop-blur"
+        className="fixed inset-x-0 z-40 border-t border-zinc-800 bg-zinc-950"
         style={{
-          bottom: `calc(env(safe-area-inset-bottom) + ${bottomOverlayPx}px + 12px)`,
+          bottom: `calc(env(safe-area-inset-bottom) + ${bottomOverlayPx}px)`,
         }}
       >
         <div className="mx-auto w-full max-w-xl px-4 py-3">
