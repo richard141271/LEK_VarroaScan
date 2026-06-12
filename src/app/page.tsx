@@ -218,7 +218,7 @@ export default function Home() {
   const [bottomOverlayPx, setBottomOverlayPx] = useState(0);
   const [showTech, setShowTech] = useState(false);
   const [lastTech, setLastTech] = useState<string | null>(null);
-  const [showAppNudge, setShowAppNudge] = useState(() => shouldShowBvAppHintNow());
+  const [isAppNudgeHidden, setIsAppNudgeHidden] = useState(false);
   const [isAppNudgeExpanded, setIsAppNudgeExpanded] = useState(false);
 
   const appVersion = useMemo(() => getAppVersion(), []);
@@ -238,6 +238,12 @@ export default function Home() {
     [returnUrl, sourceParam],
   );
 
+  const showAppNudge = useMemo(() => {
+    if (isAppNudgeHidden) return false;
+    if (typeof window === "undefined") return false;
+    return shouldShowBvAppHintNow() || isFromBiensVokter;
+  }, [isAppNudgeHidden, isFromBiensVokter]);
+
   const onBack = () => {
     if (returnMeta.url) return;
     if (window.history.length > 1) {
@@ -252,11 +258,6 @@ export default function Home() {
     } catch {}
     setReturnMeta({ url: next, label: "Tilbake" });
   };
-
-  useEffect(() => {
-    if (typeof window === "undefined") return;
-    setShowAppNudge(shouldShowBvAppHintNow() || isFromBiensVokter);
-  }, [isFromBiensVokter]);
 
   useEffect(() => {
     const vv = window.visualViewport;
@@ -574,7 +575,7 @@ export default function Home() {
                 </button>
                 <button
                   type="button"
-                  onClick={() => setShowAppNudge(false)}
+                  onClick={() => setIsAppNudgeHidden(true)}
                   className="h-8 rounded-2xl border border-amber-600 bg-amber-300 px-3 text-xs font-semibold text-zinc-950 active:opacity-90"
                 >
                   Skjul
