@@ -340,6 +340,12 @@ export function AdminSubmissionClient() {
               Innboks
             </a>
             <a
+              href={`${basePath}/innsendinger/`}
+              className="text-sm font-semibold text-zinc-200 hover:text-zinc-50"
+            >
+              Innsendinger
+            </a>
+            <a
               href={`${basePath}/admin/archive/`}
               className="text-sm font-semibold text-zinc-200 hover:text-zinc-50"
             >

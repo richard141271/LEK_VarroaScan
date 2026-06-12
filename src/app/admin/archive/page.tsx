@@ -159,6 +159,12 @@ export default function AdminArchivePage() {
               Innboks
             </a>
             <a
+              href={`${basePath}/innsendinger/`}
+              className="text-sm font-semibold text-zinc-200 hover:text-zinc-50"
+            >
+              Innsendinger
+            </a>
+            <a
               href={`${basePath}/`}
               className="text-sm font-semibold text-zinc-200 hover:text-zinc-50"
             >

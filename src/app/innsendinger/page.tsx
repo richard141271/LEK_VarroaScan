@@ -46,6 +46,8 @@ export default function InnsendingerPage() {
   const basePath = process.env.NEXT_PUBLIC_BASE_PATH ?? "";
   const supabase = useMemo(() => getSupabaseClient(), []);
 
+  const [isAuthed, setIsAuthed] = useState(false);
+  const [isAdmin, setIsAdmin] = useState(false);
   const [items, setItems] = useState<VarroaSubmission[]>([]);
   const [thumbs, setThumbs] = useState<Record<string, SignedImage | null>>({});
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -63,6 +65,32 @@ export default function InnsendingerPage() {
       }
       if (!supabase) {
         setLoadError("Mangler Supabase-konfig (NEXT_PUBLIC_SUPABASE_*).");
+        return;
+      }
+
+      const { data: sessionData } = await supabase.auth.getSession();
+      const session = sessionData.session;
+      setIsAuthed(Boolean(session));
+      if (!session) {
+        setIsAdmin(false);
+        setItems([]);
+        setThumbs({});
+        setLoadError("Logg inn som admin for å se alle innsendinger.");
+        return;
+      }
+
+      const adminRes = await supabase
+        .from("varroa_admins")
+        .select("user_id")
+        .eq("user_id", session.user.id)
+        .maybeSingle();
+
+      const admin = Boolean(adminRes.data?.user_id);
+      setIsAdmin(admin);
+      if (!admin) {
+        setItems([]);
+        setThumbs({});
+        setLoadError("Kun admin kan se alle innsendinger.");
         return;
       }
 
@@ -161,6 +189,32 @@ export default function InnsendingerPage() {
           </button>
         </div>
 
+        {!isAuthed && loadError === "Logg inn som admin for å se alle innsendinger." ? (
+          <div className="mt-4 rounded-2xl border border-zinc-800 bg-zinc-900 px-4 py-4 text-sm text-zinc-300">
+            <div className="font-semibold text-zinc-100">Admin kreves</div>
+            <div className="mt-1">Logg inn via admin for å åpne denne oversikten.</div>
+            <a
+              href={`${basePath}/admin/`}
+              className="mt-3 inline-flex h-10 items-center justify-center rounded-2xl bg-amber-400 px-4 font-semibold text-zinc-950 active:opacity-90"
+            >
+              Gå til admin
+            </a>
+          </div>
+        ) : null}
+
+        {isAuthed && !isAdmin && loadError === "Kun admin kan se alle innsendinger." ? (
+          <div className="mt-4 rounded-2xl border border-zinc-800 bg-zinc-900 px-4 py-4 text-sm text-zinc-300">
+            <div className="font-semibold text-zinc-100">Ingen tilgang</div>
+            <div className="mt-1">Denne oversikten er kun for VarroaScan-admin.</div>
+            <a
+              href={`${basePath}/admin/`}
+              className="mt-3 inline-flex h-10 items-center justify-center rounded-2xl border border-zinc-700 px-4 font-semibold text-zinc-100 active:opacity-90"
+            >
+              Til admin
+            </a>
+          </div>
+        ) : null}
+
         {!isOnline ? (
           <div className="mt-4 rounded-2xl border border-red-900/60 bg-red-950/40 px-4 py-3 text-sm text-red-200">
             Du er offline. Kan ikke hente innsendinger.
@@ -244,4 +298,3 @@ export default function InnsendingerPage() {
     </div>
   );
 }
-

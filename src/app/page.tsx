@@ -480,12 +480,6 @@ export default function Home() {
               >
                 Send flere
               </button>
-              <a
-                href={`${basePath}/innsendinger/`}
-                className="h-12 rounded-2xl border border-zinc-700 text-zinc-100 font-semibold flex items-center justify-center active:opacity-90"
-              >
-                Se innsendinger
-              </a>
               {returnUrl ? (
                 <a
                   href={returnUrl}
@@ -546,21 +540,13 @@ export default function Home() {
               <div className="text-xs text-zinc-400">v{appVersion}</div>
             </div>
           </div>
-          <div className="flex items-center gap-3">
-            <a
-              href={`${basePath}/innsendinger/`}
-              className="text-sm font-semibold text-zinc-200 hover:text-zinc-50"
-            >
-              Innsendinger
-            </a>
-            <a
-              href={`${basePath}/admin/`}
-              className="text-sm font-semibold text-zinc-200 hover:text-zinc-50"
-              style={{ display: isAdminEnabled ? undefined : "none" }}
-            >
-              Admin
-            </a>
-          </div>
+          <a
+            href={`${basePath}/admin/`}
+            className="text-sm font-semibold text-zinc-200 hover:text-zinc-50"
+            style={{ display: isAdminEnabled ? undefined : "none" }}
+          >
+            Admin
+          </a>
         </div>
 
         {!isOnline ? (
@@ -614,12 +600,6 @@ export default function Home() {
           <div className="mt-1 text-sm text-zinc-400">
             Raskt, enkelt og robust. Snakk med utviklerne hvis noe føles rart.
           </div>
-          <a
-            href={`${basePath}/innsendinger/`}
-            className="mt-4 h-11 rounded-2xl border border-zinc-700 bg-zinc-950 px-4 text-sm font-semibold text-zinc-100 flex items-center justify-center active:opacity-90"
-          >
-            Se alle innsendinger
-          </a>
           <div className="mt-4 rounded-2xl border border-zinc-800 bg-zinc-950 px-4 py-3 text-sm text-zinc-300">
             <div className="font-semibold text-zinc-200">Tips for KI-telling</div>
             <div className="mt-1">
