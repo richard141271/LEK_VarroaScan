@@ -212,7 +212,7 @@ export default function AdminInboxPage() {
               Innsending
             </a>
             <a
-              href={`${basePath}/innsendinger/`}
+              href={`${basePath}/admin/innsendinger/`}
               className="text-sm font-semibold text-zinc-200 hover:text-zinc-50"
             >
               Innsendinger

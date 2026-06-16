@@ -41,9 +41,16 @@ function getStatusUi(status: SubmissionStatus) {
   return { label: status, cls: "bg-zinc-800 text-zinc-100 border-zinc-700" };
 }
 
-export default function InnsendingPage() {
+type InnsendingPageProps = {
+  routePrefix?: string;
+};
+
+export function InnsendingPage({
+  routePrefix = "/innsendinger",
+}: InnsendingPageProps) {
   const isOnline = useOnlineStatus();
   const basePath = process.env.NEXT_PUBLIC_BASE_PATH ?? "";
+  const routeRoot = `${basePath}${routePrefix}`;
   const supabase = useMemo(() => getSupabaseClient(), []);
 
   const [isAuthed, setIsAuthed] = useState(false);
@@ -170,7 +177,7 @@ export default function InnsendingPage() {
       <header className="mx-auto w-full max-w-xl">
         <div className="flex items-center justify-between">
           <a
-            href={`${basePath}/innsendinger/`}
+            href={`${routeRoot}/`}
             className="text-sm font-semibold text-zinc-200 hover:text-zinc-50"
           >
             ← Innsendinger
@@ -297,4 +304,8 @@ export default function InnsendingPage() {
       </main>
     </div>
   );
+}
+
+export default function InnsendingPageRoute() {
+  return <InnsendingPage />;
 }
