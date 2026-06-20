@@ -358,6 +358,7 @@ export default function Home() {
       const userName =
         (session?.user?.user_metadata?.name as string | undefined) ?? null;
       const noteValue = note.trim() ? note.trim() : null;
+      const supabaseBaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL ?? "";
 
       const submissionId = crypto.randomUUID();
       const uploadedPaths: string[] = [];
@@ -379,11 +380,24 @@ export default function Home() {
         uploadedPaths.push(objectPath);
       }
 
+      const firstImagePath = uploadedPaths[0] ?? null;
+      const imageUrl =
+        firstImagePath && supabaseBaseUrl
+          ? `${supabaseBaseUrl}/storage/v1/object/authenticated/varroa-submissions/${firstImagePath}`
+          : null;
+
       step = "Oppretter innsending";
       const insertRes = await supabase
         .from("varroa_submissions")
         .insert({
           id: submissionId,
+          image_url: imageUrl,
+          beekeeper_name: userName,
+          apiary_name: null,
+          comment: noteValue,
+          mite_count_manual: null,
+          reviewed_by: null,
+          review_status: "pending",
           user_id: userId,
           user_name: userName,
           type: submissionType,
