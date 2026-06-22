@@ -87,6 +87,14 @@ function normalizeReturnUrl(value: string | null) {
   }
 }
 
+function normalizeInternalRedirectPath(value: string | null) {
+  const raw = (value ?? "").trim();
+  if (!raw) return null;
+  if (!raw.startsWith("/")) return null;
+  if (raw.startsWith("//")) return null;
+  return raw;
+}
+
 function getReturnMeta() {
   if (typeof window === "undefined") {
     return { url: null as string | null, label: "Tilbake" };
@@ -230,6 +238,11 @@ export default function Home() {
     const params = new URLSearchParams(window.location.search);
     return normalizeSource(params.get("source"));
   }, []);
+  const authRedirectPath = useMemo(() => {
+    if (typeof window === "undefined") return null;
+    const params = new URLSearchParams(window.location.search);
+    return normalizeInternalRedirectPath(params.get("authRedirect"));
+  }, []);
   const [returnMeta, setReturnMeta] = useState(() => getReturnMeta());
   const returnUrl = returnMeta.url;
   const returnLabel = returnMeta.label;
@@ -258,6 +271,38 @@ export default function Home() {
     } catch {}
     setReturnMeta({ url: next, label: "Tilbake" });
   };
+
+  useEffect(() => {
+    if (!authRedirectPath) return;
+
+    const supabase = getSupabaseClient();
+    if (!supabase) return;
+
+    let active = true;
+    let redirected = false;
+    const target = `${basePath}${authRedirectPath}`;
+
+    const redirectIfReady = (session: { user?: unknown } | null) => {
+      if (!active || redirected || !session?.user) return;
+      redirected = true;
+      window.location.replace(target);
+    };
+
+    void supabase.auth.getSession().then(({ data }) => {
+      redirectIfReady(data.session);
+    });
+
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange((_event, session) => {
+      redirectIfReady(session);
+    });
+
+    return () => {
+      active = false;
+      subscription.unsubscribe();
+    };
+  }, [authRedirectPath, basePath]);
 
   useEffect(() => {
     const vv = window.visualViewport;

@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { getSupabaseClient } from "@/lib/supabaseClient";
 import { useOnlineStatus } from "@/lib/useOnlineStatus";
+import { isVarroaAdmin } from "@/lib/varroaAdmin";
 
 export default function AdminInboxPage() {
   const isOnline = useOnlineStatus();
@@ -32,13 +33,7 @@ export default function AdminInboxPage() {
         return;
       }
 
-      const adminRes = await supabase
-        .from("varroa_admins")
-        .select("user_id")
-        .eq("user_id", session.user.id)
-        .maybeSingle();
-
-      const admin = Boolean(adminRes.data?.user_id);
+      const admin = await isVarroaAdmin(supabase, session);
       setIsAdmin(admin);
       if (!admin) return;
 
@@ -82,10 +77,13 @@ export default function AdminInboxPage() {
       return;
     }
 
+    const authRedirect = new URL(`${window.location.origin}${basePath}/`);
+    authRedirect.searchParams.set("authRedirect", "/admin/");
+
     const res = await supabase.auth.signInWithOtp({
       email: trimmed,
       options: {
-        emailRedirectTo: `${window.location.origin}${basePath}/admin/`,
+        emailRedirectTo: authRedirect.toString(),
       },
     });
 

@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { getSupabaseClient } from "@/lib/supabaseClient";
 import { useOnlineStatus } from "@/lib/useOnlineStatus";
+import { isVarroaAdmin } from "@/lib/varroaAdmin";
 
 type VarroaSubmission = {
   id: string;
@@ -98,20 +99,16 @@ export function AdminSubmissionClient() {
     setIsLoading(true);
     try {
       const { data: sessionData } = await supabase.auth.getSession();
-      if (!sessionData.session) {
+      const session = sessionData.session;
+      if (!session) {
         setLoadError("Ikke innlogget.");
         setItem(null);
         setImages([]);
         return;
       }
 
-      const adminRes = await supabase
-        .from("varroa_admins")
-        .select("user_id")
-        .eq("user_id", sessionData.session.user.id)
-        .maybeSingle();
-
-      if (!adminRes.data?.user_id) {
+      const admin = await isVarroaAdmin(supabase, session);
+      if (!admin) {
         setLoadError("Ingen admin-tilgang.");
         setItem(null);
         setImages([]);

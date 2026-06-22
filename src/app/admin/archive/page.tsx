@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { getSupabaseClient } from "@/lib/supabaseClient";
 import { useOnlineStatus } from "@/lib/useOnlineStatus";
+import { isVarroaAdmin } from "@/lib/varroaAdmin";
 
 type VarroaSubmission = {
   id: string;
@@ -61,13 +62,7 @@ export default function AdminArchivePage() {
         return;
       }
 
-      const adminRes = await supabase
-        .from("varroa_admins")
-        .select("user_id")
-        .eq("user_id", session.user.id)
-        .maybeSingle();
-
-      const admin = Boolean(adminRes.data?.user_id);
+      const admin = await isVarroaAdmin(supabase, session);
       setIsAdmin(admin);
       if (!admin) {
         setItems([]);
