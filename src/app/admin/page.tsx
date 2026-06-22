@@ -11,6 +11,7 @@ export default function AdminInboxPage() {
 
   const supabase = useMemo(() => getSupabaseClient(), []);
   const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
   const [authInfo, setAuthInfo] = useState<string | null>(null);
   const [authError, setAuthError] = useState<string | null>(null);
 
@@ -56,6 +57,46 @@ export default function AdminInboxPage() {
     }, 0);
     return () => window.clearTimeout(t);
   }, [reload]);
+
+  const signInWithPassword = async () => {
+    setAuthError(null);
+    setAuthInfo(null);
+
+    if (!isOnline) {
+      setAuthError("Du er offline. Innlogging krever nett.");
+      return;
+    }
+
+    if (!supabase) {
+      setAuthError("Mangler Supabase-konfig (NEXT_PUBLIC_SUPABASE_*).");
+      return;
+    }
+
+    const trimmedEmail = email.trim().toLowerCase();
+    if (!trimmedEmail) {
+      setAuthError("Skriv inn e-post.");
+      return;
+    }
+
+    if (!password) {
+      setAuthError("Skriv inn passord.");
+      return;
+    }
+
+    setIsLoading(true);
+    const res = await supabase.auth.signInWithPassword({
+      email: trimmedEmail,
+      password,
+    });
+    setIsLoading(false);
+
+    if (res.error) {
+      setAuthError(res.error.message);
+      return;
+    }
+
+    await reload();
+  };
 
   const sendLoginLink = async () => {
     setAuthError(null);
@@ -133,7 +174,7 @@ export default function AdminInboxPage() {
           <div className="rounded-3xl bg-zinc-900 border border-zinc-800 p-5">
             <div className="text-base font-semibold">Logg inn</div>
             <div className="mt-1 text-sm text-zinc-400">
-              Logg inn med e-postlenke. Innlogget admin sendes videre til innsendinger.
+              Logg inn med e-post og passord. E-postlenke kan brukes som reserve.
             </div>
 
             <div className="mt-4 grid grid-cols-1 gap-3">
@@ -144,13 +185,28 @@ export default function AdminInboxPage() {
                 placeholder="din@epost.no"
                 className="h-12 rounded-2xl border border-zinc-700 bg-zinc-950 px-4 text-sm text-zinc-50 placeholder:text-zinc-600 focus:outline-none focus:ring-2 focus:ring-amber-300"
               />
+              <input
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                type="password"
+                placeholder="Passord"
+                className="h-12 rounded-2xl border border-zinc-700 bg-zinc-950 px-4 text-sm text-zinc-50 placeholder:text-zinc-600 focus:outline-none focus:ring-2 focus:ring-amber-300"
+              />
+              <button
+                type="button"
+                onClick={signInWithPassword}
+                className="h-12 rounded-2xl bg-amber-400 text-zinc-950 font-semibold active:opacity-90 disabled:opacity-60"
+                disabled={!isOnline || isLoading}
+              >
+                Logg inn med passord
+              </button>
               <button
                 type="button"
                 onClick={sendLoginLink}
-                className="h-12 rounded-2xl bg-amber-400 text-zinc-950 font-semibold active:opacity-90 disabled:opacity-60"
-                disabled={!isOnline}
+                className="h-12 rounded-2xl border border-zinc-700 bg-zinc-950 text-zinc-50 font-semibold active:opacity-90 disabled:opacity-60"
+                disabled={!isOnline || isLoading}
               >
-                Send innloggingslenke
+                Send e-postlenke i stedet
               </button>
             </div>
 
