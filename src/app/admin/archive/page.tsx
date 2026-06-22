@@ -35,19 +35,16 @@ function formatDateTime(value: string) {
 export default function AdminArchivePage() {
   const isOnline = useOnlineStatus();
   const basePath = process.env.NEXT_PUBLIC_BASE_PATH ?? "";
-  const isAdminEnabled = process.env.NEXT_PUBLIC_ENABLE_ADMIN === "true";
   const supabase = useMemo(() => getSupabaseClient(), []);
 
+  const [isAuthed, setIsAuthed] = useState(false);
+  const [isAdmin, setIsAdmin] = useState(false);
   const [items, setItems] = useState<VarroaSubmission[]>([]);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
 
   const reload = useCallback(async () => {
     setLoadError(null);
-    if (!isAdminEnabled) {
-      setItems([]);
-      return;
-    }
     if (!supabase) {
       setLoadError("Mangler Supabase-konfig (NEXT_PUBLIC_SUPABASE_*).");
       return;
@@ -55,19 +52,26 @@ export default function AdminArchivePage() {
     setIsLoading(true);
     try {
       const { data: sessionData } = await supabase.auth.getSession();
-      if (!sessionData.session) {
+      const session = sessionData.session;
+      setIsAuthed(Boolean(session));
+      if (!session) {
+        setIsAdmin(false);
         setItems([]);
+        setLoadError("Logg inn som admin for å se arkivet.");
         return;
       }
 
       const adminRes = await supabase
         .from("varroa_admins")
         .select("user_id")
-        .eq("user_id", sessionData.session.user.id)
+        .eq("user_id", session.user.id)
         .maybeSingle();
 
-      if (!adminRes.data?.user_id) {
+      const admin = Boolean(adminRes.data?.user_id);
+      setIsAdmin(admin);
+      if (!admin) {
         setItems([]);
+        setLoadError("Kun admin kan se arkivet.");
         return;
       }
 
@@ -106,42 +110,14 @@ export default function AdminArchivePage() {
     } finally {
       setIsLoading(false);
     }
-  }, [isAdminEnabled, supabase]);
+  }, [supabase]);
 
   useEffect(() => {
-    if (!isAdminEnabled) return;
     const t = window.setTimeout(() => {
       void reload();
     }, 0);
     return () => window.clearTimeout(t);
-  }, [isAdminEnabled, reload]);
-
-  if (!isAdminEnabled) {
-    return (
-      <div className="min-h-dvh px-4 pb-10 pt-8">
-        <header className="mx-auto w-full max-w-3xl">
-          <div className="flex items-center justify-between">
-            <div>
-              <div className="text-lg font-semibold">Admin</div>
-              <div className="text-xs text-zinc-400">Deaktivert</div>
-            </div>
-            <a
-              href={`${basePath}/`}
-              className="text-sm font-semibold text-zinc-200 hover:text-zinc-50"
-            >
-              Innsending
-            </a>
-          </div>
-        </header>
-
-        <main className="mx-auto mt-6 w-full max-w-3xl">
-          <div className="rounded-3xl bg-zinc-900 border border-zinc-800 p-5">
-            <div className="text-base font-semibold">Admin er midlertidig av</div>
-          </div>
-        </main>
-      </div>
-    );
-  }
+  }, [reload]);
 
   return (
     <div className="min-h-dvh px-4 pb-10 pt-8">
@@ -181,69 +157,95 @@ export default function AdminArchivePage() {
       </header>
 
       <main className="mx-auto mt-6 w-full max-w-3xl space-y-4">
-        <div className="rounded-3xl bg-zinc-900 border border-zinc-800 p-5">
-          <div className="flex items-center justify-between">
-            <div className="text-base font-semibold">Arkiv</div>
-            <button
-              type="button"
-              onClick={reload}
-              className="h-10 rounded-2xl border border-zinc-700 bg-zinc-950 px-4 text-sm font-semibold text-zinc-50 active:opacity-90 disabled:opacity-60"
-              disabled={isLoading}
-            >
-              Oppdater
-            </button>
-          </div>
-
-          {loadError ? (
-            <div className="mt-4 rounded-2xl border border-red-900/60 bg-red-950/40 px-4 py-3 text-sm text-red-200">
-              {loadError}
+        {!isAuthed && loadError === "Logg inn som admin for å se arkivet." ? (
+          <div className="rounded-3xl bg-zinc-900 border border-zinc-800 p-5">
+            <div className="text-base font-semibold">Admin kreves</div>
+            <div className="mt-1 text-sm text-zinc-400">
+              Logg inn via admin for å åpne arkivet.
             </div>
-          ) : null}
+            <a
+              href={`${basePath}/admin/`}
+              className="mt-4 inline-flex h-10 items-center justify-center rounded-2xl bg-amber-400 px-4 font-semibold text-zinc-950 active:opacity-90"
+            >
+              Gå til admin
+            </a>
+          </div>
+        ) : null}
 
-          <div className="mt-4 divide-y divide-zinc-800">
-            {items.length === 0 ? (
-              <div className="py-6 text-sm text-zinc-400">
-                Ingen innsendelser i arkivet.
+        {isAuthed && !isAdmin && loadError === "Kun admin kan se arkivet." ? (
+          <div className="rounded-3xl bg-zinc-900 border border-zinc-800 p-5">
+            <div className="text-base font-semibold">Ingen tilgang</div>
+            <div className="mt-1 text-sm text-zinc-400">
+              Du er innlogget, men er ikke registrert som admin i Supabase.
+            </div>
+          </div>
+        ) : null}
+
+        {isAdmin ? (
+          <div className="rounded-3xl bg-zinc-900 border border-zinc-800 p-5">
+            <div className="flex items-center justify-between">
+              <div className="text-base font-semibold">Arkiv</div>
+              <button
+                type="button"
+                onClick={reload}
+                className="h-10 rounded-2xl border border-zinc-700 bg-zinc-950 px-4 text-sm font-semibold text-zinc-50 active:opacity-90 disabled:opacity-60"
+                disabled={isLoading}
+              >
+                Oppdater
+              </button>
+            </div>
+
+            {loadError ? (
+              <div className="mt-4 rounded-2xl border border-red-900/60 bg-red-950/40 px-4 py-3 text-sm text-red-200">
+                {loadError}
               </div>
             ) : null}
 
-            {items.map((s) => (
-              <a
-                key={s.id}
-                href={`${basePath}/admin/submission/?id=${encodeURIComponent(s.id)}`}
-                className="block py-4 hover:bg-zinc-950/60 rounded-2xl px-3 -mx-3"
-              >
-                <div className="flex items-start justify-between gap-4">
-                  <div className="min-w-0">
-                    <div className="text-sm font-semibold text-zinc-100 truncate">
-                      {s.type === "BUNNBRETT_FOTO"
-                        ? "Bunnbrett foto"
-                        : s.type === "KONTROLLFOTO"
-                          ? "Kontrollfoto"
-                          : s.type}
-                    </div>
-                    <div className="mt-1 text-xs text-zinc-400">
-                      {formatDateTime(s.created_at)}
-                      {s.user_name ? ` • ${s.user_name}` : ""}
-                      {s.images?.length ? ` • ${s.images.length} bilder` : ""}
-                      {s.status ? ` • ${s.status}` : ""}
-                      {s.ai_status ? ` • AI ${s.ai_status}` : ""}
-                      {typeof s.ai_count === "number" ? ` • ${s.ai_count} midd` : ""}
-                    </div>
-                    {s.note ? (
-                      <div className="mt-2 text-sm text-zinc-300">
-                        {s.note}
-                      </div>
-                    ) : null}
-                  </div>
-                  <div className="text-sm font-semibold text-zinc-200">
-                    Åpne →
-                  </div>
+            <div className="mt-4 divide-y divide-zinc-800">
+              {items.length === 0 ? (
+                <div className="py-6 text-sm text-zinc-400">
+                  Ingen innsendelser i arkivet.
                 </div>
-              </a>
-            ))}
+              ) : null}
+
+              {items.map((s) => (
+                <a
+                  key={s.id}
+                  href={`${basePath}/admin/submission/?id=${encodeURIComponent(s.id)}`}
+                  className="block py-4 hover:bg-zinc-950/60 rounded-2xl px-3 -mx-3"
+                >
+                  <div className="flex items-start justify-between gap-4">
+                    <div className="min-w-0">
+                      <div className="text-sm font-semibold text-zinc-100 truncate">
+                        {s.type === "BUNNBRETT_FOTO"
+                          ? "Bunnbrett foto"
+                          : s.type === "KONTROLLFOTO"
+                            ? "Kontrollfoto"
+                            : s.type}
+                      </div>
+                      <div className="mt-1 text-xs text-zinc-400">
+                        {formatDateTime(s.created_at)}
+                        {s.user_name ? ` • ${s.user_name}` : ""}
+                        {s.images?.length ? ` • ${s.images.length} bilder` : ""}
+                        {s.status ? ` • ${s.status}` : ""}
+                        {s.ai_status ? ` • AI ${s.ai_status}` : ""}
+                        {typeof s.ai_count === "number" ? ` • ${s.ai_count} midd` : ""}
+                      </div>
+                      {s.note ? (
+                        <div className="mt-2 text-sm text-zinc-300">
+                          {s.note}
+                        </div>
+                      ) : null}
+                    </div>
+                    <div className="text-sm font-semibold text-zinc-200">
+                      Åpne →
+                    </div>
+                  </div>
+                </a>
+              ))}
+            </div>
           </div>
-        </div>
+        ) : null}
       </main>
     </div>
   );
