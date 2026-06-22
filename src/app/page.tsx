@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import { usePathname } from "next/navigation";
 import { getAppVersion } from "@/lib/appVersion";
 import { getDeviceInfo } from "@/lib/deviceInfo";
+import { isVarroaAdmin } from "@/lib/varroaAdmin";
 import { getSupabaseClient } from "@/lib/supabaseClient";
 import { useOnlineStatus } from "@/lib/useOnlineStatus";
 
@@ -93,6 +94,13 @@ function normalizeInternalRedirectPath(value: string | null) {
   if (!raw.startsWith("/")) return null;
   if (raw.startsWith("//")) return null;
   return raw;
+}
+
+function hasMagicLinkHash(hash: string) {
+  const raw = String(hash ?? "").replace(/^#/, "");
+  if (!raw) return false;
+  const params = new URLSearchParams(raw);
+  return Boolean(params.get("access_token") || params.get("refresh_token"));
 }
 
 function getReturnMeta() {
@@ -243,6 +251,10 @@ export default function Home() {
     const params = new URLSearchParams(window.location.search);
     return normalizeInternalRedirectPath(params.get("authRedirect"));
   }, []);
+  const isMagicLinkLanding = useMemo(() => {
+    if (typeof window === "undefined") return false;
+    return hasMagicLinkHash(window.location.hash);
+  }, []);
   const [returnMeta, setReturnMeta] = useState(() => getReturnMeta());
   const returnUrl = returnMeta.url;
   const returnLabel = returnMeta.label;
@@ -303,6 +315,42 @@ export default function Home() {
       subscription.unsubscribe();
     };
   }, [authRedirectPath, basePath]);
+
+  useEffect(() => {
+    if (authRedirectPath || !isMagicLinkLanding) return;
+
+    const supabase = getSupabaseClient();
+    if (!supabase) return;
+
+    let active = true;
+    let redirected = false;
+    const target = `${basePath}/admin/innsendinger/`;
+
+    const redirectIfAdmin = async (
+      session: Awaited<ReturnType<typeof supabase.auth.getSession>>["data"]["session"],
+    ) => {
+      if (!active || redirected || !session?.user) return;
+      const admin = await isVarroaAdmin(supabase, session);
+      if (!active || redirected || !admin) return;
+      redirected = true;
+      window.location.replace(target);
+    };
+
+    void supabase.auth.getSession().then(({ data }) => {
+      void redirectIfAdmin(data.session);
+    });
+
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange((_event, session) => {
+      void redirectIfAdmin(session);
+    });
+
+    return () => {
+      active = false;
+      subscription.unsubscribe();
+    };
+  }, [authRedirectPath, basePath, isMagicLinkLanding]);
 
   useEffect(() => {
     const vv = window.visualViewport;
