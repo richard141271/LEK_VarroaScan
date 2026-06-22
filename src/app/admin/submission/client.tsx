@@ -2,6 +2,10 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "next/navigation";
+import {
+  appendAdminContext,
+  getAdminReturnInfo,
+} from "@/lib/adminNavigation";
 import { getSupabaseClient } from "@/lib/supabaseClient";
 import { useOnlineStatus } from "@/lib/useOnlineStatus";
 import { isVarroaAdmin } from "@/lib/varroaAdmin";
@@ -63,6 +67,16 @@ export function AdminSubmissionClient() {
   const isOnline = useOnlineStatus();
   const basePath = process.env.NEXT_PUBLIC_BASE_PATH ?? "";
   const supabase = useMemo(() => getSupabaseClient(), []);
+  const adminContextSearch = useMemo(() => {
+    if (typeof window === "undefined") return "";
+    return window.location.search;
+  }, []);
+  const returnInfo = useMemo(() => {
+    if (typeof window === "undefined") {
+      return { href: null as string | null, label: "← Tilbake" };
+    }
+    return getAdminReturnInfo(window.location.search);
+  }, []);
 
   const searchParams = useSearchParams();
   const id = searchParams.get("id");
@@ -330,20 +344,22 @@ export function AdminSubmissionClient() {
             <div className="text-xs text-zinc-400">Innsendelse</div>
           </div>
           <div className="flex items-center gap-4">
+            {returnInfo.href ? (
+              <a
+                href={returnInfo.href}
+                className="text-sm font-semibold text-zinc-200 hover:text-zinc-50"
+              >
+                {returnInfo.label}
+              </a>
+            ) : null}
             <a
-              href={`${basePath}/admin/`}
-              className="text-sm font-semibold text-zinc-200 hover:text-zinc-50"
-            >
-              Innboks
-            </a>
-            <a
-              href={`${basePath}/admin/innsendinger/`}
+              href={appendAdminContext(`${basePath}/admin/innsendinger/`, adminContextSearch)}
               className="text-sm font-semibold text-zinc-200 hover:text-zinc-50"
             >
               Innsendinger
             </a>
             <a
-              href={`${basePath}/admin/archive/`}
+              href={appendAdminContext(`${basePath}/admin/archive/`, adminContextSearch)}
               className="text-sm font-semibold text-zinc-200 hover:text-zinc-50"
             >
               Arkiv

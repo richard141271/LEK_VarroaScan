@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { appendAdminContext } from "@/lib/adminNavigation";
 import { getSupabaseClient } from "@/lib/supabaseClient";
 import { useOnlineStatus } from "@/lib/useOnlineStatus";
 import { isVarroaAdmin } from "@/lib/varroaAdmin";
@@ -52,7 +53,13 @@ export function InnsendingPage({
   const isOnline = useOnlineStatus();
   const basePath = process.env.NEXT_PUBLIC_BASE_PATH ?? "";
   const routeRoot = `${basePath}${routePrefix}`;
+  const isAdminRoute = routePrefix.startsWith("/admin");
   const supabase = useMemo(() => getSupabaseClient(), []);
+  const adminContextSearch = useMemo(() => {
+    if (typeof window === "undefined") return "";
+    return isAdminRoute ? window.location.search : "";
+  }, [isAdminRoute]);
+  const listHref = appendAdminContext(`${routeRoot}/`, adminContextSearch);
 
   const [isAuthed, setIsAuthed] = useState(false);
   const [isAdmin, setIsAdmin] = useState(false);
@@ -172,7 +179,7 @@ export function InnsendingPage({
       <header className="mx-auto w-full max-w-xl">
         <div className="flex items-center justify-between">
           <a
-            href={`${routeRoot}/`}
+            href={listHref}
             className="text-sm font-semibold text-zinc-200 hover:text-zinc-50"
           >
             ← Innsendinger

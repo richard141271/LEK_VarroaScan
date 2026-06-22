@@ -1,6 +1,10 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
+import {
+  appendAdminContext,
+  getAdminReturnInfo,
+} from "@/lib/adminNavigation";
 import { getSupabaseClient } from "@/lib/supabaseClient";
 import { useOnlineStatus } from "@/lib/useOnlineStatus";
 import { isVarroaAdmin } from "@/lib/varroaAdmin";
@@ -37,6 +41,16 @@ export default function AdminArchivePage() {
   const isOnline = useOnlineStatus();
   const basePath = process.env.NEXT_PUBLIC_BASE_PATH ?? "";
   const supabase = useMemo(() => getSupabaseClient(), []);
+  const adminContextSearch = useMemo(() => {
+    if (typeof window === "undefined") return "";
+    return window.location.search;
+  }, []);
+  const returnInfo = useMemo(() => {
+    if (typeof window === "undefined") {
+      return { href: null as string | null, label: "← Tilbake" };
+    }
+    return getAdminReturnInfo(window.location.search);
+  }, []);
 
   const [isAuthed, setIsAuthed] = useState(false);
   const [isAdmin, setIsAdmin] = useState(false);
@@ -123,23 +137,19 @@ export default function AdminArchivePage() {
             <div className="text-xs text-zinc-400">Arkiv</div>
           </div>
           <div className="flex items-center gap-4">
+            {returnInfo.href ? (
+              <a
+                href={returnInfo.href}
+                className="text-sm font-semibold text-zinc-200 hover:text-zinc-50"
+              >
+                {returnInfo.label}
+              </a>
+            ) : null}
             <a
-              href={`${basePath}/admin/`}
-              className="text-sm font-semibold text-zinc-200 hover:text-zinc-50"
-            >
-              Innboks
-            </a>
-            <a
-              href={`${basePath}/admin/innsendinger/`}
+              href={appendAdminContext(`${basePath}/admin/innsendinger/`, adminContextSearch)}
               className="text-sm font-semibold text-zinc-200 hover:text-zinc-50"
             >
               Innsendinger
-            </a>
-            <a
-              href={`${basePath}/`}
-              className="text-sm font-semibold text-zinc-200 hover:text-zinc-50"
-            >
-              Innsending
             </a>
           </div>
         </div>
@@ -206,7 +216,10 @@ export default function AdminArchivePage() {
               {items.map((s) => (
                 <a
                   key={s.id}
-                  href={`${basePath}/admin/submission/?id=${encodeURIComponent(s.id)}`}
+                  href={appendAdminContext(
+                    `${basePath}/admin/submission/?id=${encodeURIComponent(s.id)}`,
+                    adminContextSearch,
+                  )}
                   className="block py-4 hover:bg-zinc-950/60 rounded-2xl px-3 -mx-3"
                 >
                   <div className="flex items-start justify-between gap-4">

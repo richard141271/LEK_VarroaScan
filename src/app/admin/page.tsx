@@ -1,6 +1,11 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
+import {
+  appendAdminContext,
+  getAdminContextSearch,
+  getAdminReturnInfo,
+} from "@/lib/adminNavigation";
 import { getSupabaseClient } from "@/lib/supabaseClient";
 import { useOnlineStatus } from "@/lib/useOnlineStatus";
 import { isVarroaAdmin } from "@/lib/varroaAdmin";
@@ -8,6 +13,16 @@ import { isVarroaAdmin } from "@/lib/varroaAdmin";
 export default function AdminInboxPage() {
   const isOnline = useOnlineStatus();
   const basePath = process.env.NEXT_PUBLIC_BASE_PATH ?? "";
+  const adminContextSearch = useMemo(() => {
+    if (typeof window === "undefined") return "";
+    return getAdminContextSearch(window.location.search);
+  }, []);
+  const returnInfo = useMemo(() => {
+    if (typeof window === "undefined") {
+      return { href: null as string | null, label: "← Tilbake" };
+    }
+    return getAdminReturnInfo(window.location.search);
+  }, []);
 
   const supabase = useMemo(() => getSupabaseClient(), []);
   const [email, setEmail] = useState("");
@@ -38,7 +53,9 @@ export default function AdminInboxPage() {
       setIsAdmin(admin);
       if (!admin) return;
 
-      window.location.replace(`${basePath}/admin/innsendinger/`);
+      window.location.replace(
+        appendAdminContext(`${basePath}/admin/innsendinger/`, adminContextSearch),
+      );
       return;
     } catch (e) {
       const message =
@@ -49,7 +66,7 @@ export default function AdminInboxPage() {
     } finally {
       setIsLoading(false);
     }
-  }, [basePath, supabase]);
+  }, [adminContextSearch, basePath, supabase]);
 
   useEffect(() => {
     const t = window.setTimeout(() => {
@@ -152,14 +169,14 @@ export default function AdminInboxPage() {
               Innlogging
             </div>
           </div>
-          <div className="flex items-center gap-4">
+          {returnInfo.href ? (
             <a
-              href={`${basePath}/`}
+              href={returnInfo.href}
               className="text-sm font-semibold text-zinc-200 hover:text-zinc-50"
             >
-              Innsending
+              {returnInfo.label}
             </a>
-          </div>
+          ) : null}
         </div>
 
         {!isOnline ? (

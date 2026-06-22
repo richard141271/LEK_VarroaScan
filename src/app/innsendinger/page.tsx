@@ -1,6 +1,10 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
+import {
+  appendAdminContext,
+  getAdminReturnInfo,
+} from "@/lib/adminNavigation";
 import { getSupabaseClient } from "@/lib/supabaseClient";
 import { useOnlineStatus } from "@/lib/useOnlineStatus";
 import { isVarroaAdmin } from "@/lib/varroaAdmin";
@@ -52,7 +56,19 @@ export function InnsendingerPage({
   const isOnline = useOnlineStatus();
   const basePath = process.env.NEXT_PUBLIC_BASE_PATH ?? "";
   const routeRoot = `${basePath}${routePrefix}`;
+  const isAdminRoute = routePrefix.startsWith("/admin");
   const supabase = useMemo(() => getSupabaseClient(), []);
+  const adminContextSearch = useMemo(() => {
+    if (typeof window === "undefined") return "";
+    return isAdminRoute ? window.location.search : "";
+  }, [isAdminRoute]);
+  const returnInfo = useMemo(() => {
+    if (!isAdminRoute || typeof window === "undefined") {
+      return { href: null as string | null, label: "← Tilbake" };
+    }
+    return getAdminReturnInfo(window.location.search);
+  }, [isAdminRoute]);
+  const backHref = returnInfo.href ?? (isAdminRoute ? `${basePath}/admin/` : `${basePath}/`);
 
   const [isAuthed, setIsAuthed] = useState(false);
   const [isAdmin, setIsAdmin] = useState(false);
@@ -167,10 +183,10 @@ export function InnsendingerPage({
       <header className="mx-auto w-full max-w-xl">
         <div className="flex items-center justify-between">
           <a
-            href={`${basePath}/`}
+            href={backHref}
             className="text-sm font-semibold text-zinc-200 hover:text-zinc-50"
           >
-            ← Tilbake
+            {returnInfo.label}
           </a>
           <div className="flex items-center gap-3">
             <div className="h-10 w-10 rounded-2xl bg-zinc-800 flex items-center justify-center">
@@ -244,7 +260,10 @@ export function InnsendingerPage({
             return (
               <a
                 key={s.id}
-                href={`${routeRoot}/innsending/?id=${encodeURIComponent(s.id)}`}
+                href={appendAdminContext(
+                  `${routeRoot}/innsending/?id=${encodeURIComponent(s.id)}`,
+                  adminContextSearch,
+                )}
                 className="block rounded-3xl bg-zinc-900 border border-zinc-800 p-5 hover:bg-zinc-950/60 active:opacity-95"
               >
                 <div className="flex items-start gap-4">
