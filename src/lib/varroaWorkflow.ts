@@ -51,6 +51,8 @@ export type VarroaSubmissionReview = {
   comment: string | null;
   training_ready: boolean;
   approved: boolean;
+  current_image_index: number;
+  image_notes: unknown;
 };
 
 export type VarroaSubmissionHistory = {
@@ -196,6 +198,8 @@ export function isMissingWorkflowSchemaError(value: unknown) {
     message.includes("varroa_submission_reviews") ||
     message.includes("assigned_to") ||
     message.includes("updated_at") ||
+    message.includes("current_image_index") ||
+    message.includes("image_notes") ||
     message.includes("varroa_claim_next_submission") ||
     message.includes("varroa_available_new_count")
   );

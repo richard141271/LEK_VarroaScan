@@ -88,6 +88,8 @@ export function ProductionSubmissionClient() {
   const [saveError, setSaveError] = useState<string | null>(null);
   const [saveOk, setSaveOk] = useState<string | null>(null);
   const [isSaving, setIsSaving] = useState(false);
+  const totalImages = images.length;
+  const isLastImage = totalImages === 0 || selectedImage >= totalImages - 1;
 
   const reload = useCallback(async () => {
     setLoadError(null);
@@ -134,7 +136,7 @@ export function ProductionSubmissionClient() {
         supabase
           .from("varroa_submission_reviews")
           .select(
-            "id,submission_id,created_at,updated_at,created_by,mite_count,image_quality,comment,training_ready,approved",
+            "id,submission_id,created_at,updated_at,created_by,mite_count,image_quality,comment,training_ready,approved,current_image_index,image_notes",
           )
           .eq("submission_id", id)
           .order("updated_at", { ascending: false })
@@ -189,12 +191,16 @@ export function ProductionSubmissionClient() {
       setReviews(loadedReviews);
       setHistory(loadedHistory);
       setImages(signedImages);
-      setSelectedImage((current) =>
-        signedImages.length === 0 ? 0 : Math.min(current, signedImages.length - 1),
-      );
 
       const ownReview = loadedReviews.find((review) => review.created_by === nextAccess.userId);
       const latestReview = ownReview ?? loadedReviews[0] ?? null;
+      const nextImageIndex =
+        typeof latestReview?.current_image_index === "number"
+          ? latestReview.current_image_index
+          : 0;
+      setSelectedImage(
+        signedImages.length === 0 ? 0 : Math.min(Math.max(nextImageIndex, 0), signedImages.length - 1),
+      );
       setMiteCountInput(
         latestReview?.mite_count != null
           ? String(latestReview.mite_count)
@@ -256,14 +262,25 @@ export function ProductionSubmissionClient() {
     let nextTrainingReady = trainingReady;
     let approved = false;
     const historyComment = reviewComment.trim() || null;
+    const stayOnCurrentSubmission =
+      action === "SAVE_AND_NEXT" && selectedImage < Math.max(images.length - 1, 0);
+    const nextImageIndex = stayOnCurrentSubmission
+      ? Math.min(selectedImage + 1, Math.max(images.length - 1, 0))
+      : selectedImage;
 
     switch (action) {
       case "SAVE_DRAFT":
         nextStatus = item.status === "NY" ? "UNDER_ARBEID" : item.status;
         break;
       case "READY_FOR_REVIEW":
-      case "SAVE_AND_NEXT":
         nextStatus = "KLAR_FOR_KONTROLL";
+        break;
+      case "SAVE_AND_NEXT":
+        nextStatus = stayOnCurrentSubmission
+          ? access.role === "STUDENT"
+            ? "UNDER_ARBEID"
+            : item.status
+          : "KLAR_FOR_KONTROLL";
         break;
       case "APPROVED":
         nextStatus = "GODKJENT";
@@ -331,6 +348,8 @@ export function ProductionSubmissionClient() {
           comment: historyComment,
           training_ready: nextTrainingReady,
           approved,
+          current_image_index: nextImageIndex,
+          image_notes: [],
         },
         {
           onConflict: "submission_id,created_by",
@@ -358,6 +377,8 @@ export function ProductionSubmissionClient() {
           image_quality: imageQuality || null,
           training_ready: nextTrainingReady,
           approved,
+          current_image_index: nextImageIndex,
+          total_images: images.length,
         },
       });
       if (historyRes.error) throw historyRes.error;
@@ -365,6 +386,10 @@ export function ProductionSubmissionClient() {
       setSaveOk(`${getActionButtonLabel(action)} lagret.`);
 
       if (action === "SAVE_AND_NEXT") {
+        if (stayOnCurrentSubmission) {
+          await reload();
+          return;
+        }
         const nextRes = await supabase.rpc("varroa_claim_next_submission");
         if (nextRes.error) throw nextRes.error;
         const nextId = String(nextRes.data ?? "");
@@ -399,6 +424,7 @@ export function ProductionSubmissionClient() {
   const currentStatusUi = getStatusUi(item?.status ?? "NY");
   const qualityOptions = getQualityOptions();
   const latestReview = reviews[0] ?? null;
+  const saveAndNextLabel = isLastImage ? "Lagre og neste sak" : "Lagre og neste bilde";
 
   return (
     <div className="min-h-dvh px-4 pb-10 pt-8">
@@ -499,6 +525,9 @@ export function ProductionSubmissionClient() {
 
               <div className="rounded-3xl border border-zinc-800 bg-zinc-900 p-5">
                 <div className="text-base font-semibold text-zinc-50">Bilde</div>
+                <div className="mt-2 text-sm text-zinc-400">
+                  Bilde {Math.min(selectedImage + 1, Math.max(totalImages, 1))} av {Math.max(totalImages, 1)}
+                </div>
                 <div className="mt-4 overflow-hidden rounded-3xl border border-zinc-800 bg-zinc-950">
                   {currentImage ? (
                     <img
@@ -514,17 +543,17 @@ export function ProductionSubmissionClient() {
                 </div>
 
                 {images.length > 1 ? (
-                  <div className="mt-4 flex gap-3 overflow-x-auto pb-1">
+                  <div className="mt-4 grid grid-cols-4 gap-3 xl:grid-cols-6">
                     {images.map((image, index) => (
-                      <button
+                      <div
                         key={image.path}
-                        type="button"
-                        onClick={() => setSelectedImage(index)}
                         className={[
-                          "shrink-0 overflow-hidden rounded-2xl border bg-zinc-950",
+                          "overflow-hidden rounded-2xl border bg-zinc-950",
                           index === selectedImage
                             ? "border-amber-300 ring-2 ring-amber-300/40"
-                            : "border-zinc-800",
+                            : index < selectedImage
+                              ? "border-emerald-700"
+                              : "border-zinc-800",
                         ].join(" ")}
                       >
                         <img
@@ -532,7 +561,14 @@ export function ProductionSubmissionClient() {
                           alt={`Miniatyr ${index + 1}`}
                           className="h-24 w-24 object-cover"
                         />
-                      </button>
+                        <div className="border-t border-zinc-800 px-2 py-1 text-center text-[10px] font-semibold text-zinc-400">
+                          {index < selectedImage
+                            ? "Ferdig"
+                            : index === selectedImage
+                              ? "Nå"
+                              : "Neste"}
+                        </div>
+                      </div>
                     ))}
                   </div>
                 ) : null}
@@ -628,8 +664,8 @@ export function ProductionSubmissionClient() {
                       <button
                         type="button"
                         onClick={() => void persist("READY_FOR_REVIEW")}
-                        disabled={isSaving}
-                        className="h-12 rounded-2xl border border-sky-700 bg-sky-950/40 text-sm font-semibold text-sky-100 active:opacity-90 disabled:opacity-60"
+                        disabled={isSaving || !isLastImage}
+                        className="h-12 rounded-2xl border border-sky-700 bg-sky-950/40 text-sm font-semibold text-sky-100 active:opacity-90 disabled:opacity-40"
                       >
                         {getActionButtonLabel("READY_FOR_REVIEW")}
                       </button>
@@ -639,8 +675,14 @@ export function ProductionSubmissionClient() {
                         disabled={isSaving}
                         className="h-12 rounded-2xl bg-amber-400 text-sm font-semibold text-zinc-950 active:opacity-90 disabled:opacity-60"
                       >
-                        {getActionButtonLabel("SAVE_AND_NEXT")}
+                        {saveAndNextLabel}
                       </button>
+                      {!isLastImage ? (
+                        <div className="rounded-2xl border border-zinc-800 bg-zinc-950 px-4 py-3 text-xs text-zinc-400">
+                          Fullfør alle bildene i saken. Når siste bilde er lagret, går du
+                          automatisk videre til neste sak.
+                        </div>
+                      ) : null}
                     </>
                   ) : null}
 
