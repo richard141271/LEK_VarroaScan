@@ -28,7 +28,6 @@ export default function RootLayout({
 }: Readonly<{
   children: React.ReactNode;
 }>) {
-  const vercelEnv = process.env.VERCEL_ENV;
   const vercelBranch = process.env.VERCEL_GIT_COMMIT_REF;
   const vercelSha = process.env.VERCEL_GIT_COMMIT_SHA;
   const appEnv = process.env.NEXT_PUBLIC_APP_ENV;

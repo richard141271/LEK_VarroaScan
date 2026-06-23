@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import { usePathname } from "next/navigation";
 import { getAppVersion } from "@/lib/appVersion";
 import { getDeviceInfo } from "@/lib/deviceInfo";
+import { isVarroaAdmin } from "@/lib/varroaAdmin";
 import { getSupabaseClient } from "@/lib/supabaseClient";
 import { useOnlineStatus } from "@/lib/useOnlineStatus";
 
@@ -85,6 +86,21 @@ function normalizeReturnUrl(value: string | null) {
   } catch {
     return null;
   }
+}
+
+function normalizeInternalRedirectPath(value: string | null) {
+  const raw = (value ?? "").trim();
+  if (!raw) return null;
+  if (!raw.startsWith("/")) return null;
+  if (raw.startsWith("//")) return null;
+  return raw;
+}
+
+function hasMagicLinkHash(hash: string) {
+  const raw = String(hash ?? "").replace(/^#/, "");
+  if (!raw) return false;
+  const params = new URLSearchParams(raw);
+  return Boolean(params.get("access_token") || params.get("refresh_token"));
 }
 
 function getReturnMeta() {
@@ -218,7 +234,7 @@ export default function Home() {
   const [bottomOverlayPx, setBottomOverlayPx] = useState(0);
   const [showTech, setShowTech] = useState(false);
   const [lastTech, setLastTech] = useState<string | null>(null);
-  const [showAppNudge, setShowAppNudge] = useState(() => shouldShowBvAppHintNow());
+  const [isAppNudgeHidden, setIsAppNudgeHidden] = useState(false);
   const [isAppNudgeExpanded, setIsAppNudgeExpanded] = useState(false);
 
   const appVersion = useMemo(() => getAppVersion(), []);
@@ -230,6 +246,15 @@ export default function Home() {
     const params = new URLSearchParams(window.location.search);
     return normalizeSource(params.get("source"));
   }, []);
+  const authRedirectPath = useMemo(() => {
+    if (typeof window === "undefined") return null;
+    const params = new URLSearchParams(window.location.search);
+    return normalizeInternalRedirectPath(params.get("authRedirect"));
+  }, []);
+  const isMagicLinkLanding = useMemo(() => {
+    if (typeof window === "undefined") return false;
+    return hasMagicLinkHash(window.location.hash);
+  }, []);
   const [returnMeta, setReturnMeta] = useState(() => getReturnMeta());
   const returnUrl = returnMeta.url;
   const returnLabel = returnMeta.label;
@@ -237,6 +262,12 @@ export default function Home() {
     () => isLikelyFromBiensVokter(returnUrl, sourceParam),
     [returnUrl, sourceParam],
   );
+
+  const showAppNudge = useMemo(() => {
+    if (isAppNudgeHidden) return false;
+    if (typeof window === "undefined") return false;
+    return shouldShowBvAppHintNow() || isFromBiensVokter;
+  }, [isAppNudgeHidden, isFromBiensVokter]);
 
   const onBack = () => {
     if (returnMeta.url) return;
@@ -254,9 +285,72 @@ export default function Home() {
   };
 
   useEffect(() => {
-    if (typeof window === "undefined") return;
-    setShowAppNudge(shouldShowBvAppHintNow() || isFromBiensVokter);
-  }, [isFromBiensVokter]);
+    if (!authRedirectPath) return;
+
+    const supabase = getSupabaseClient();
+    if (!supabase) return;
+
+    let active = true;
+    let redirected = false;
+    const target = `${basePath}${authRedirectPath}`;
+
+    const redirectIfReady = (session: { user?: unknown } | null) => {
+      if (!active || redirected || !session?.user) return;
+      redirected = true;
+      window.location.replace(target);
+    };
+
+    void supabase.auth.getSession().then(({ data }) => {
+      redirectIfReady(data.session);
+    });
+
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange((_event, session) => {
+      redirectIfReady(session);
+    });
+
+    return () => {
+      active = false;
+      subscription.unsubscribe();
+    };
+  }, [authRedirectPath, basePath]);
+
+  useEffect(() => {
+    if (authRedirectPath || !isMagicLinkLanding) return;
+
+    const supabase = getSupabaseClient();
+    if (!supabase) return;
+
+    let active = true;
+    let redirected = false;
+    const target = `${basePath}/admin/innsendinger/`;
+
+    const redirectIfAdmin = async (
+      session: Awaited<ReturnType<typeof supabase.auth.getSession>>["data"]["session"],
+    ) => {
+      if (!active || redirected || !session?.user) return;
+      const admin = await isVarroaAdmin(supabase, session);
+      if (!active || redirected || !admin) return;
+      redirected = true;
+      window.location.replace(target);
+    };
+
+    void supabase.auth.getSession().then(({ data }) => {
+      void redirectIfAdmin(data.session);
+    });
+
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange((_event, session) => {
+      void redirectIfAdmin(session);
+    });
+
+    return () => {
+      active = false;
+      subscription.unsubscribe();
+    };
+  }, [authRedirectPath, basePath, isMagicLinkLanding]);
 
   useEffect(() => {
     const vv = window.visualViewport;
@@ -357,6 +451,7 @@ export default function Home() {
       const userName =
         (session?.user?.user_metadata?.name as string | undefined) ?? null;
       const noteValue = note.trim() ? note.trim() : null;
+      const supabaseBaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL ?? "";
 
       const submissionId = crypto.randomUUID();
       const uploadedPaths: string[] = [];
@@ -378,11 +473,24 @@ export default function Home() {
         uploadedPaths.push(objectPath);
       }
 
+      const firstImagePath = uploadedPaths[0] ?? null;
+      const imageUrl =
+        firstImagePath && supabaseBaseUrl
+          ? `${supabaseBaseUrl}/storage/v1/object/authenticated/varroa-submissions/${firstImagePath}`
+          : null;
+
       step = "Oppretter innsending";
       const insertRes = await supabase
         .from("varroa_submissions")
         .insert({
           id: submissionId,
+          image_url: imageUrl,
+          beekeeper_name: userName,
+          apiary_name: null,
+          comment: noteValue,
+          mite_count_manual: null,
+          reviewed_by: null,
+          review_status: "pending",
           user_id: userId,
           user_name: userName,
           type: submissionType,
@@ -574,7 +682,7 @@ export default function Home() {
                 </button>
                 <button
                   type="button"
-                  onClick={() => setShowAppNudge(false)}
+                  onClick={() => setIsAppNudgeHidden(true)}
                   className="h-8 rounded-2xl border border-amber-600 bg-amber-300 px-3 text-xs font-semibold text-zinc-950 active:opacity-90"
                 >
                   Skjul
