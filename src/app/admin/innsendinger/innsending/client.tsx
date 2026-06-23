@@ -90,6 +90,7 @@ export function ProductionSubmissionClient() {
   const [isSaving, setIsSaving] = useState(false);
   const totalImages = images.length;
   const isLastImage = totalImages === 0 || selectedImage >= totalImages - 1;
+  const isController = Boolean(access?.canControl);
 
   const reload = useCallback(async () => {
     setLoadError(null);
@@ -276,11 +277,12 @@ export function ProductionSubmissionClient() {
         nextStatus = "KLAR_FOR_KONTROLL";
         break;
       case "SAVE_AND_NEXT":
-        nextStatus = stayOnCurrentSubmission
-          ? access.role === "STUDENT"
-            ? "UNDER_ARBEID"
-            : item.status
-          : "KLAR_FOR_KONTROLL";
+        nextStatus =
+          access.role === "STUDENT"
+            ? stayOnCurrentSubmission
+              ? "UNDER_ARBEID"
+              : "KLAR_FOR_KONTROLL"
+            : item.status;
         break;
       case "APPROVED":
         nextStatus = "GODKJENT";
@@ -390,6 +392,11 @@ export function ProductionSubmissionClient() {
           await reload();
           return;
         }
+        if (access.canControl) {
+          setSaveOk("Alle bilder er kontrollert. Du kan nå godkjenne saken.");
+          await reload();
+          return;
+        }
         const nextRes = await supabase.rpc("varroa_claim_next_submission");
         if (nextRes.error) throw nextRes.error;
         const nextId = String(nextRes.data ?? "");
@@ -424,7 +431,13 @@ export function ProductionSubmissionClient() {
   const currentStatusUi = getStatusUi(item?.status ?? "NY");
   const qualityOptions = getQualityOptions();
   const latestReview = reviews[0] ?? null;
-  const saveAndNextLabel = isLastImage ? "Lagre og neste sak" : "Lagre og neste bilde";
+  const saveAndNextLabel = isController
+    ? isLastImage
+      ? "Kontroll fullført"
+      : "Neste kontrollbilde"
+    : isLastImage
+      ? "Lagre og neste sak"
+      : "Lagre og neste bilde";
 
   return (
     <div className="min-h-dvh px-4 pb-10 pt-8">
@@ -579,7 +592,9 @@ export function ProductionSubmissionClient() {
               <section className="rounded-3xl border border-zinc-800 bg-zinc-900 p-5">
                 <div className="text-base font-semibold text-zinc-50">Arbeidsfelt</div>
                 <div className="mt-1 text-sm text-zinc-400">
-                  Klar for høy fart. Lagre kladd, send til kontroll eller gå rett til neste.
+                  {isController
+                    ? "Kontroller bilde for bilde. Godkjenning åpnes først når siste bilde er ferdig."
+                    : "Klar for høy fart. Lagre kladd, send til kontroll eller gå rett til neste."}
                 </div>
 
                 <div className="mt-4 grid grid-cols-1 gap-4">
@@ -690,17 +705,31 @@ export function ProductionSubmissionClient() {
                     <>
                       <button
                         type="button"
+                        onClick={() => void persist("SAVE_AND_NEXT")}
+                        disabled={isSaving || isLastImage}
+                        className="h-12 rounded-2xl bg-amber-400 text-sm font-semibold text-zinc-950 active:opacity-90 disabled:opacity-40"
+                      >
+                        {saveAndNextLabel}
+                      </button>
+                      {!isLastImage ? (
+                        <div className="rounded-2xl border border-zinc-800 bg-zinc-950 px-4 py-3 text-xs text-zinc-400">
+                          Gå gjennom alle bildene i saken. Godkjenning låses opp når du er på
+                          siste bilde.
+                        </div>
+                      ) : null}
+                      <button
+                        type="button"
                         onClick={() => void persist("APPROVED")}
-                        disabled={isSaving}
-                        className="h-12 rounded-2xl border border-emerald-700 bg-emerald-950/40 text-sm font-semibold text-emerald-100 active:opacity-90 disabled:opacity-60"
+                        disabled={isSaving || !isLastImage}
+                        className="h-12 rounded-2xl border border-emerald-700 bg-emerald-950/40 text-sm font-semibold text-emerald-100 active:opacity-90 disabled:opacity-40"
                       >
                         {getActionButtonLabel("APPROVED")}
                       </button>
                       <button
                         type="button"
                         onClick={() => void persist("APPROVED_FOR_TRAINING")}
-                        disabled={isSaving}
-                        className="h-12 rounded-2xl border border-fuchsia-700 bg-fuchsia-950/40 text-sm font-semibold text-fuchsia-100 active:opacity-90 disabled:opacity-60"
+                        disabled={isSaving || !isLastImage}
+                        className="h-12 rounded-2xl border border-fuchsia-700 bg-fuchsia-950/40 text-sm font-semibold text-fuchsia-100 active:opacity-90 disabled:opacity-40"
                       >
                         {getActionButtonLabel("APPROVED_FOR_TRAINING")}
                       </button>
@@ -718,8 +747,8 @@ export function ProductionSubmissionClient() {
                         <button
                           type="button"
                           onClick={() => void persist("ARCHIVED")}
-                          disabled={isSaving}
-                          className="h-12 rounded-2xl border border-zinc-700 bg-zinc-950 text-sm font-semibold text-zinc-50 active:opacity-90 disabled:opacity-60"
+                          disabled={isSaving || !isLastImage}
+                          className="h-12 rounded-2xl border border-zinc-700 bg-zinc-950 text-sm font-semibold text-zinc-50 active:opacity-90 disabled:opacity-40"
                         >
                           {getActionButtonLabel("ARCHIVED")}
                         </button>
