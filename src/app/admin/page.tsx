@@ -8,7 +8,17 @@ import {
 } from "@/lib/adminNavigation";
 import { getSupabaseClient } from "@/lib/supabaseClient";
 import { useOnlineStatus } from "@/lib/useOnlineStatus";
-import { isVarroaAdmin } from "@/lib/varroaAdmin";
+import { getVarroaAccess, type VarroaAccess } from "@/lib/varroaRoles";
+import {
+  formatDateTime,
+  getRoleLabel,
+  getStatusUi,
+  getSubmissionSelect,
+  getTypeLabel,
+  getWorkflowMigrationMessage,
+  isMissingWorkflowSchemaError,
+  type VarroaSubmissionRecord,
+} from "@/lib/varroaWorkflow";
 
 export default function AdminInboxPage() {
   const isOnline = useOnlineStatus();
@@ -29,44 +39,83 @@ export default function AdminInboxPage() {
   const [password, setPassword] = useState("");
   const [authInfo, setAuthInfo] = useState<string | null>(null);
   const [authError, setAuthError] = useState<string | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
 
   const [isAuthed, setIsAuthed] = useState(false);
-  const [isAdmin, setIsAdmin] = useState(false);
+  const [access, setAccess] = useState<VarroaAccess | null>(null);
+  const [items, setItems] = useState<VarroaSubmissionRecord[]>([]);
+  const [availableNewCount, setAvailableNewCount] = useState(0);
   const [isLoading, setIsLoading] = useState(false);
 
   const reload = useCallback(async () => {
+    setAuthError(null);
+    setLoadError(null);
+
     if (!supabase) {
       setAuthError("Mangler Supabase-konfig (NEXT_PUBLIC_SUPABASE_*).");
       return;
     }
+
     setIsLoading(true);
     try {
       const { data: sessionData } = await supabase.auth.getSession();
       const session = sessionData.session;
       setIsAuthed(Boolean(session));
       if (!session) {
-        setIsAdmin(false);
+        setAccess(null);
+        setItems([]);
+        setAvailableNewCount(0);
         return;
       }
 
-      const admin = await isVarroaAdmin(supabase, session);
-      setIsAdmin(admin);
-      if (!admin) return;
+      const nextAccess = await getVarroaAccess(supabase, session);
+      setAccess(nextAccess);
+      if (!nextAccess.role) {
+        setItems([]);
+        setAvailableNewCount(0);
+        return;
+      }
 
-      window.location.replace(
-        appendAdminContext(`${basePath}/admin/innsendinger/`, adminContextSearch),
-      );
-      return;
+      const [submissionsRes, availableRes] = await Promise.all([
+        supabase
+          .from("varroa_submissions")
+          .select(getSubmissionSelect())
+          .order("updated_at", { ascending: false })
+          .limit(300),
+        supabase.rpc("varroa_available_new_count"),
+      ]);
+
+      if (submissionsRes.error) {
+        if (isMissingWorkflowSchemaError(submissionsRes.error)) {
+          setLoadError(getWorkflowMigrationMessage());
+          setItems([]);
+        } else {
+          throw submissionsRes.error;
+        }
+      } else {
+        setItems((submissionsRes.data ?? []) as unknown as VarroaSubmissionRecord[]);
+      }
+
+      if (availableRes.error) {
+        if (isMissingWorkflowSchemaError(availableRes.error)) {
+          setLoadError(getWorkflowMigrationMessage());
+          setAvailableNewCount(0);
+        } else {
+          throw availableRes.error;
+        }
+      } else {
+        setAvailableNewCount(Number(availableRes.data ?? 0));
+      }
     } catch (e) {
       const message =
         typeof e === "object" && e && "message" in e
           ? String((e as { message?: unknown }).message)
           : "Ukjent feil";
-      setAuthError(message);
+      setLoadError(message);
     } finally {
       setIsLoading(false);
     }
-  }, [adminContextSearch, basePath, supabase]);
+  }, [supabase]);
 
   useEffect(() => {
     const t = window.setTimeout(() => {
@@ -159,15 +208,110 @@ export default function AdminInboxPage() {
     await reload();
   };
 
+  const openNextSubmission = async () => {
+    if (!supabase) return;
+    setAuthInfo(null);
+    setLoadError(null);
+    setIsLoading(true);
+
+    try {
+      const res = await supabase.rpc("varroa_claim_next_submission");
+      if (res.error) {
+        if (isMissingWorkflowSchemaError(res.error)) {
+          setLoadError(getWorkflowMigrationMessage());
+          return;
+        }
+        throw res.error;
+      }
+
+      const nextId = String(res.data ?? "");
+      if (!nextId) {
+        setAuthInfo("Ingen flere ledige saker akkurat nå.");
+        await reload();
+        return;
+      }
+
+      window.location.assign(
+        appendAdminContext(
+          `${basePath}/admin/innsendinger/innsending/?id=${encodeURIComponent(nextId)}`,
+          adminContextSearch,
+        ),
+      );
+    } catch (e) {
+      const message =
+        typeof e === "object" && e && "message" in e
+          ? String((e as { message?: unknown }).message)
+          : "Ukjent feil";
+      setLoadError(message);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const counts = useMemo(() => {
+    const summary = {
+      NY: 0,
+      UNDER_ARBEID: 0,
+      KLAR_FOR_KONTROLL: 0,
+      GODKJENT: 0,
+      KLAR_FOR_TRENING: 0,
+      ARKIVERT: 0,
+    };
+    for (const item of items) {
+      if (item.status in summary) {
+        summary[item.status as keyof typeof summary] += 1;
+      }
+    }
+    return summary;
+  }, [items]);
+
+  const myItems = useMemo(() => {
+    const userId = access?.userId;
+    if (!userId) return [];
+    return items.filter(
+      (item) => item.assigned_to === userId || item.processed_by === userId,
+    );
+  }, [access?.userId, items]);
+
+  const reviewItems = useMemo(
+    () => items.filter((item) => item.status === "KLAR_FOR_KONTROLL").slice(0, 8),
+    [items],
+  );
+
+  const trainingItems = useMemo(
+    () =>
+      items
+        .filter((item) => item.status === "GODKJENT" || item.status === "KLAR_FOR_TRENING")
+        .slice(0, 8),
+    [items],
+  );
+
+  const statusCards = [
+    { key: "NY", label: "Nye saker", value: counts.NY, fallback: availableNewCount },
+    { key: "UNDER_ARBEID", label: "Under arbeid", value: counts.UNDER_ARBEID, fallback: 0 },
+    {
+      key: "KLAR_FOR_KONTROLL",
+      label: "Klar for kontroll",
+      value: counts.KLAR_FOR_KONTROLL,
+      fallback: 0,
+    },
+    { key: "GODKJENT", label: "Godkjente", value: counts.GODKJENT, fallback: 0 },
+    {
+      key: "KLAR_FOR_TRENING",
+      label: "Klar for trening",
+      value: counts.KLAR_FOR_TRENING,
+      fallback: 0,
+    },
+    { key: "ARKIVERT", label: "Arkiverte", value: counts.ARKIVERT, fallback: 0 },
+  ] as const;
+
   return (
     <div className="min-h-dvh px-4 pb-10 pt-8">
-      <header className="mx-auto w-full max-w-3xl">
+      <header className="mx-auto w-full max-w-6xl">
         <div className="flex items-center justify-between">
           <div>
-            <div className="text-lg font-semibold">Admin</div>
-            <div className="text-xs text-zinc-400">
-              Innlogging
-            </div>
+            <div className="text-lg font-semibold">LEK-VarroaScan</div>
+            <div className="text-xs text-zinc-400">Produksjonsverktøy</div>
           </div>
           {returnInfo.href ? (
             <a
@@ -181,17 +325,17 @@ export default function AdminInboxPage() {
 
         {!isOnline ? (
           <div className="mt-4 rounded-2xl border border-red-900/60 bg-red-950/40 px-4 py-3 text-sm text-red-200">
-            Du er offline. Admin krever nett.
+            Du er offline. Produksjonsflyten krever nett.
           </div>
         ) : null}
       </header>
 
-      <main className="mx-auto mt-6 w-full max-w-3xl space-y-4">
+      <main className="mx-auto mt-6 w-full max-w-6xl space-y-4">
         {!isAuthed ? (
-          <div className="rounded-3xl bg-zinc-900 border border-zinc-800 p-5">
+          <div className="rounded-3xl border border-zinc-800 bg-zinc-900 p-5">
             <div className="text-base font-semibold">Logg inn</div>
             <div className="mt-1 text-sm text-zinc-400">
-              Logg inn med e-post og passord. E-postlenke kan brukes som reserve.
+              Logg inn for å åpne kø, arbeidsflate og kontrollflyt.
             </div>
 
             <div className="mt-4 grid grid-cols-1 gap-3">
@@ -212,7 +356,7 @@ export default function AdminInboxPage() {
               <button
                 type="button"
                 onClick={signInWithPassword}
-                className="h-12 rounded-2xl bg-amber-400 text-zinc-950 font-semibold active:opacity-90 disabled:opacity-60"
+                className="h-12 rounded-2xl bg-amber-400 text-sm font-semibold text-zinc-950 active:opacity-90 disabled:opacity-60"
                 disabled={!isOnline || isLoading}
               >
                 Logg inn med passord
@@ -220,7 +364,7 @@ export default function AdminInboxPage() {
               <button
                 type="button"
                 onClick={sendLoginLink}
-                className="h-12 rounded-2xl border border-zinc-700 bg-zinc-950 text-zinc-50 font-semibold active:opacity-90 disabled:opacity-60"
+                className="h-12 rounded-2xl border border-zinc-700 bg-zinc-950 text-sm font-semibold text-zinc-50 active:opacity-90 disabled:opacity-60"
                 disabled={!isOnline || isLoading}
               >
                 Send e-postlenke i stedet
@@ -240,11 +384,11 @@ export default function AdminInboxPage() {
           </div>
         ) : null}
 
-        {isAuthed && !isAdmin ? (
-          <div className="rounded-3xl bg-zinc-900 border border-zinc-800 p-5">
+        {isAuthed && access?.role == null ? (
+          <div className="rounded-3xl border border-zinc-800 bg-zinc-900 p-5">
             <div className="text-base font-semibold">Ingen tilgang</div>
             <div className="mt-1 text-sm text-zinc-400">
-              Du er innlogget, men er ikke registrert som admin i Supabase.
+              Du er innlogget, men mangler rolle i VarroaScan-produksjonen.
             </div>
             <div className="mt-4">
               <button
@@ -258,32 +402,262 @@ export default function AdminInboxPage() {
           </div>
         ) : null}
 
-        {isAdmin ? (
-          <div className="rounded-3xl bg-zinc-900 border border-zinc-800 p-5">
-            <div className="flex items-center justify-between">
-              <div className="text-base font-semibold">Sender deg videre...</div>
-              <div className="flex items-center gap-2">
-                <button
-                  type="button"
-                  onClick={reload}
-                  className="h-10 rounded-2xl border border-zinc-700 bg-zinc-950 px-4 text-sm font-semibold text-zinc-50 active:opacity-90 disabled:opacity-60"
-                  disabled={isLoading}
-                >
-                  Oppdater
-                </button>
-                <button
-                  type="button"
-                  onClick={signOut}
-                  className="h-10 rounded-2xl border border-zinc-700 bg-zinc-950 px-4 text-sm font-semibold text-zinc-50 active:opacity-90"
-                >
-                  Logg ut
-                </button>
+        {access?.role ? (
+          <>
+            <section className="rounded-3xl border border-zinc-800 bg-zinc-900 p-5">
+              <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
+                <div>
+                  <div className="text-xl font-semibold text-zinc-50">
+                    Samlebånd for merking og kvalitetssikring
+                  </div>
+                  <div className="mt-1 text-sm text-zinc-400">
+                    Rolle: {getRoleLabel(access.role)}. Optimalisert for neste sak, store
+                    bilder og færrest mulig klikk.
+                  </div>
+                </div>
+                <div className="flex flex-wrap gap-3">
+                  <button
+                    type="button"
+                    onClick={openNextSubmission}
+                    disabled={!access.canUseQueue || isLoading}
+                    className="h-12 rounded-2xl bg-amber-400 px-5 text-sm font-semibold text-zinc-950 active:opacity-90 disabled:opacity-60"
+                  >
+                    Start arbeid
+                  </button>
+                  <a
+                    href={appendAdminContext(
+                      `${basePath}/admin/innsendinger/?view=mine`,
+                      adminContextSearch,
+                    )}
+                    className="inline-flex h-12 items-center justify-center rounded-2xl border border-zinc-700 bg-zinc-950 px-5 text-sm font-semibold text-zinc-50 active:opacity-90"
+                  >
+                    Mine saker
+                  </a>
+                  <a
+                    href={appendAdminContext(
+                      `${basePath}/admin/innsendinger/?view=all`,
+                      adminContextSearch,
+                    )}
+                    className="inline-flex h-12 items-center justify-center rounded-2xl border border-zinc-700 bg-zinc-950 px-5 text-sm font-semibold text-zinc-50 active:opacity-90"
+                  >
+                    Arbeidskø
+                  </a>
+                  <button
+                    type="button"
+                    onClick={signOut}
+                    className="h-12 rounded-2xl border border-zinc-700 bg-zinc-950 px-5 text-sm font-semibold text-zinc-50 active:opacity-90"
+                  >
+                    Logg ut
+                  </button>
+                </div>
               </div>
-            </div>
-            <div className="mt-4 text-sm text-zinc-400">
-              Åpner adminoversikten for innsendinger.
-            </div>
-          </div>
+
+              {authInfo ? (
+                <div className="mt-4 rounded-2xl border border-emerald-900/50 bg-emerald-950/40 px-4 py-3 text-sm text-emerald-200">
+                  {authInfo}
+                </div>
+              ) : null}
+              {loadError ? (
+                <div className="mt-4 rounded-2xl border border-red-900/60 bg-red-950/40 px-4 py-3 text-sm text-red-200">
+                  {loadError}
+                </div>
+              ) : null}
+            </section>
+
+            <section className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
+              {statusCards.map((card) => {
+                const ui = getStatusUi(card.key);
+                const value =
+                  card.key === "NY" && !access.canSeeAll
+                    ? Math.max(card.value, card.fallback)
+                    : card.value;
+                return (
+                  <div
+                    key={card.key}
+                    className="rounded-3xl border border-zinc-800 bg-zinc-900 p-5"
+                  >
+                    <div className="flex items-center justify-between">
+                      <div className="text-sm font-semibold text-zinc-200">{card.label}</div>
+                      <div className={`h-2.5 w-2.5 rounded-full ${ui.accentClass}`} />
+                    </div>
+                    <div className="mt-3 text-4xl font-semibold text-zinc-50">{value}</div>
+                    <div className="mt-1 text-xs text-zinc-500">{ui.label}</div>
+                  </div>
+                );
+              })}
+            </section>
+
+            <section className="grid grid-cols-1 gap-4 xl:grid-cols-[1.3fr_1fr]">
+              <div className="rounded-3xl border border-zinc-800 bg-zinc-900 p-5">
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <div className="text-base font-semibold text-zinc-50">Mine saker</div>
+                    <div className="text-sm text-zinc-400">
+                      Sakene du har i arbeid akkurat nå.
+                    </div>
+                  </div>
+                  <a
+                    href={appendAdminContext(
+                      `${basePath}/admin/innsendinger/?view=mine`,
+                      adminContextSearch,
+                    )}
+                    className="text-sm font-semibold text-amber-300 hover:text-amber-200"
+                  >
+                    Åpne kø →
+                  </a>
+                </div>
+                <div className="mt-4 space-y-3">
+                  {myItems.length === 0 ? (
+                    <div className="rounded-2xl border border-zinc-800 bg-zinc-950 px-4 py-4 text-sm text-zinc-400">
+                      Ingen aktive saker ennå.
+                    </div>
+                  ) : null}
+                  {myItems.slice(0, 6).map((item) => {
+                    const ui = getStatusUi(item.status);
+                    return (
+                      <a
+                        key={item.id}
+                        href={appendAdminContext(
+                          `${basePath}/admin/innsendinger/innsending/?id=${encodeURIComponent(item.id)}`,
+                          adminContextSearch,
+                        )}
+                        className="block rounded-2xl border border-zinc-800 bg-zinc-950 px-4 py-4 hover:bg-zinc-950/70"
+                      >
+                        <div className="flex flex-wrap items-center justify-between gap-3">
+                          <div>
+                            <div className="text-sm font-semibold text-zinc-50">
+                              {getTypeLabel(item.type)}
+                            </div>
+                            <div className="mt-1 text-xs text-zinc-500">
+                              Opprettet {formatDateTime(item.created_at)}
+                            </div>
+                          </div>
+                          <div
+                            className={[
+                              "rounded-full border px-3 py-1 text-[11px] font-semibold",
+                              ui.chipClass,
+                            ].join(" ")}
+                          >
+                            {ui.label}
+                          </div>
+                        </div>
+                        <div className="mt-2 line-clamp-2 text-sm text-zinc-300">
+                          {item.note || "Ingen kommentar fra innsendingen."}
+                        </div>
+                      </a>
+                    );
+                  })}
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 gap-4">
+                <div className="rounded-3xl border border-zinc-800 bg-zinc-900 p-5">
+                  <div className="flex items-center justify-between gap-3">
+                    <div>
+                      <div className="text-base font-semibold text-zinc-50">
+                        Klar for kontroll
+                      </div>
+                      <div className="text-sm text-zinc-400">
+                        Studentarbeid som venter på godkjenning.
+                      </div>
+                    </div>
+                    <a
+                      href={appendAdminContext(
+                        `${basePath}/admin/innsendinger/?view=kontroll`,
+                        adminContextSearch,
+                      )}
+                      className="text-sm font-semibold text-amber-300 hover:text-amber-200"
+                    >
+                      Se alle →
+                    </a>
+                  </div>
+                  <div className="mt-4 space-y-3">
+                    {reviewItems.length === 0 ? (
+                      <div className="rounded-2xl border border-zinc-800 bg-zinc-950 px-4 py-4 text-sm text-zinc-400">
+                        Ingen saker venter på kontroll.
+                      </div>
+                    ) : null}
+                    {reviewItems.map((item) => (
+                      <a
+                        key={item.id}
+                        href={appendAdminContext(
+                          `${basePath}/admin/innsendinger/innsending/?id=${encodeURIComponent(item.id)}`,
+                          adminContextSearch,
+                        )}
+                        className="block rounded-2xl border border-zinc-800 bg-zinc-950 px-4 py-4 hover:bg-zinc-950/70"
+                      >
+                        <div className="text-sm font-semibold text-zinc-50">
+                          {getTypeLabel(item.type)}
+                        </div>
+                        <div className="mt-1 text-xs text-zinc-500">
+                          {formatDateTime(item.updated_at ?? item.created_at)}
+                        </div>
+                      </a>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="rounded-3xl border border-zinc-800 bg-zinc-900 p-5">
+                  <div className="flex items-center justify-between gap-3">
+                    <div>
+                      <div className="text-base font-semibold text-zinc-50">
+                        Godkjent / trening
+                      </div>
+                      <div className="text-sm text-zinc-400">
+                        Sporbare saker som nærmer seg treningsdatasett.
+                      </div>
+                    </div>
+                    <a
+                      href={appendAdminContext(`${basePath}/admin/archive/`, adminContextSearch)}
+                      className="text-sm font-semibold text-amber-300 hover:text-amber-200"
+                    >
+                      Arkiv →
+                    </a>
+                  </div>
+                  <div className="mt-4 space-y-3">
+                    {trainingItems.length === 0 ? (
+                      <div className="rounded-2xl border border-zinc-800 bg-zinc-950 px-4 py-4 text-sm text-zinc-400">
+                        Ingen saker er godkjent ennå.
+                      </div>
+                    ) : null}
+                    {trainingItems.map((item) => {
+                      const ui = getStatusUi(item.status);
+                      return (
+                        <a
+                          key={item.id}
+                          href={appendAdminContext(
+                            `${basePath}/admin/innsendinger/innsending/?id=${encodeURIComponent(item.id)}`,
+                            adminContextSearch,
+                          )}
+                          className="block rounded-2xl border border-zinc-800 bg-zinc-950 px-4 py-4 hover:bg-zinc-950/70"
+                        >
+                          <div className="flex items-center justify-between gap-3">
+                            <div className="text-sm font-semibold text-zinc-50">
+                              {getTypeLabel(item.type)}
+                            </div>
+                            <div
+                              className={[
+                                "rounded-full border px-3 py-1 text-[11px] font-semibold",
+                                ui.chipClass,
+                              ].join(" ")}
+                            >
+                              {ui.label}
+                            </div>
+                          </div>
+                          <div className="mt-1 text-xs text-zinc-500">
+                            {item.training_ready ? "Treningsklar" : "Ikke treningsklar"}{" "}
+                            {item.manual_mite_count != null
+                              ? `• ${item.manual_mite_count} midd`
+                              : ""}
+                          </div>
+                        </a>
+                      );
+                    })}
+                  </div>
+                </div>
+              </div>
+            </section>
+          </>
         ) : null}
       </main>
     </div>
