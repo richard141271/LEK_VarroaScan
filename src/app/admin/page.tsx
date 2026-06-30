@@ -20,6 +20,14 @@ import {
   type VarroaSubmissionRecord,
 } from "@/lib/varroaWorkflow";
 
+function normalizeInternalRedirectPath(value: string | null) {
+  if (!value) return null;
+  if (!value.startsWith("/")) return null;
+  if (value.startsWith("//")) return null;
+  if (value.startsWith("/api/")) return null;
+  return value;
+}
+
 export default function AdminInboxPage() {
   const isOnline = useOnlineStatus();
   const basePath = process.env.NEXT_PUBLIC_BASE_PATH ?? "";
@@ -32,6 +40,11 @@ export default function AdminInboxPage() {
       return { href: null as string | null, label: "← Tilbake" };
     }
     return getAdminReturnInfo(window.location.search);
+  }, []);
+  const requestedNextPath = useMemo(() => {
+    if (typeof window === "undefined") return null;
+    const params = new URLSearchParams(window.location.search);
+    return normalizeInternalRedirectPath(params.get("next"));
   }, []);
 
   const supabase = useMemo(() => getSupabaseClient(), []);
@@ -124,6 +137,12 @@ export default function AdminInboxPage() {
     return () => window.clearTimeout(t);
   }, [reload]);
 
+  useEffect(() => {
+    if (!isAuthed || !access?.role || !requestedNextPath) return;
+    if (requestedNextPath === "/admin/" || requestedNextPath === "/admin") return;
+    window.location.replace(`${basePath}${requestedNextPath}`);
+  }, [access?.role, basePath, isAuthed, requestedNextPath]);
+
   const signInWithPassword = async () => {
     setAuthError(null);
     setAuthInfo(null);
@@ -185,7 +204,7 @@ export default function AdminInboxPage() {
     }
 
     const authRedirect = new URL(`${window.location.origin}${basePath}/`);
-    authRedirect.searchParams.set("authRedirect", "/admin/");
+    authRedirect.searchParams.set("authRedirect", requestedNextPath ?? "/admin/");
 
     const res = await supabase.auth.signInWithOtp({
       email: trimmed,
@@ -215,6 +234,52 @@ export default function AdminInboxPage() {
     setIsLoading(true);
 
     try {
+      const userId = access?.userId;
+      if (userId) {
+        const underWorkRes = await supabase
+          .from("varroa_submissions")
+          .select("id")
+          .eq("status", "UNDER_ARBEID")
+          .or(`assigned_to.eq.${userId},processed_by.eq.${userId}`)
+          .order("updated_at", { ascending: true })
+          .limit(1)
+          .maybeSingle();
+
+        if (underWorkRes.error) throw underWorkRes.error;
+        const resumeId = String(underWorkRes.data?.id ?? "");
+        if (resumeId) {
+          window.location.assign(
+            appendAdminContext(
+              `${basePath}/admin/innsendinger/innsending/?id=${encodeURIComponent(resumeId)}`,
+              adminContextSearch,
+            ),
+          );
+          return;
+        }
+      }
+
+      if (access?.canControl) {
+        const reviewRes = await supabase
+          .from("varroa_submissions")
+          .select("id")
+          .eq("status", "KLAR_FOR_KONTROLL")
+          .order("created_at", { ascending: true })
+          .limit(1)
+          .maybeSingle();
+
+        if (reviewRes.error) throw reviewRes.error;
+        const reviewId = String(reviewRes.data?.id ?? "");
+        if (reviewId) {
+          window.location.assign(
+            appendAdminContext(
+              `${basePath}/admin/innsendinger/innsending/?id=${encodeURIComponent(reviewId)}`,
+              adminContextSearch,
+            ),
+          );
+          return;
+        }
+      }
+
       const res = await supabase.rpc("varroa_claim_next_submission");
       if (res.error) {
         if (isMissingWorkflowSchemaError(res.error)) {

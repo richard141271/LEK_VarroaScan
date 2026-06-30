@@ -70,6 +70,15 @@ export function ProductionSubmissionClient() {
     }
     return getAdminReturnInfo(window.location.search);
   }, []);
+  const adminLoginHref = useMemo(() => {
+    if (typeof window === "undefined") return `${basePath}/admin/`;
+    const params = new URLSearchParams(window.location.search);
+    const currentPath = window.location.pathname.startsWith(basePath)
+      ? window.location.pathname.slice(basePath.length) || "/"
+      : window.location.pathname;
+    params.set("next", `${currentPath}${window.location.search}`);
+    return `${basePath}/admin/?${params.toString()}`;
+  }, [basePath]);
 
   const [isAuthed, setIsAuthed] = useState(false);
   const [access, setAccess] = useState<VarroaAccess | null>(null);
@@ -115,7 +124,7 @@ export function ProductionSubmissionClient() {
         setAccess(null);
         setItem(null);
         setImages([]);
-        setLoadError("Logg inn for å åpne arbeidsflaten.");
+        window.location.replace(adminLoginHref);
         return;
       }
 
@@ -225,7 +234,7 @@ export function ProductionSubmissionClient() {
     } finally {
       setIsLoading(false);
     }
-  }, [id, supabase]);
+  }, [adminLoginHref, id, supabase]);
 
   useEffect(() => {
     const t = window.setTimeout(() => {
@@ -302,6 +311,15 @@ export function ProductionSubmissionClient() {
         break;
     }
 
+    const isImageStep = action === "SAVE_AND_NEXT" && stayOnCurrentSubmission;
+    const historyAction = isImageStep
+      ? access.canControl
+        ? "CONTROL_NEXT_IMAGE"
+        : "WORK_NEXT_IMAGE"
+      : action;
+    const historyFromStatus = isImageStep ? null : item.status;
+    const historyToStatus = isImageStep ? null : nextStatus;
+
     const updatePatch: Record<string, unknown> = {
       status: nextStatus,
       manual_mite_count: miteCount,
@@ -341,6 +359,8 @@ export function ProductionSubmissionClient() {
 
     setIsSaving(true);
     try {
+      const ownReview = reviews.find((review) => review.created_by === access.userId);
+      const latestReview = ownReview ?? reviews[0] ?? null;
       const reviewRes = await supabase.from("varroa_submission_reviews").upsert(
         {
           submission_id: item.id,
@@ -351,7 +371,7 @@ export function ProductionSubmissionClient() {
           training_ready: nextTrainingReady,
           approved,
           current_image_index: nextImageIndex,
-          image_notes: [],
+          image_notes: latestReview?.image_notes ?? [],
         },
         {
           onConflict: "submission_id,created_by",
@@ -369,9 +389,9 @@ export function ProductionSubmissionClient() {
       const historyRes = await supabase.from("varroa_submission_history").insert({
         submission_id: item.id,
         user_id: access.userId,
-        action,
-        from_status: item.status,
-        to_status: nextStatus,
+        action: historyAction,
+        from_status: historyFromStatus,
+        to_status: historyToStatus,
         comment: historyComment,
         payload: {
           role: access.role,
@@ -386,6 +406,62 @@ export function ProductionSubmissionClient() {
       if (historyRes.error) throw historyRes.error;
 
       setSaveOk(`${getActionButtonLabel(action)} lagret.`);
+
+      if (
+        access.canControl &&
+        (action === "APPROVED" ||
+          action === "APPROVED_FOR_TRAINING" ||
+          action === "RETURNED" ||
+          action === "ARCHIVED")
+      ) {
+        const nextControlRes = await supabase
+          .from("varroa_submissions")
+          .select("id")
+          .eq("status", "KLAR_FOR_KONTROLL")
+          .neq("id", item.id)
+          .order("created_at", { ascending: true })
+          .limit(1)
+          .maybeSingle();
+
+        if (nextControlRes.error) throw nextControlRes.error;
+        const nextId = String(nextControlRes.data?.id ?? "");
+        if (nextId) {
+          window.location.assign(
+            appendAdminContext(
+              `${basePath}/admin/innsendinger/innsending/?id=${encodeURIComponent(nextId)}`,
+              adminContextSearch,
+            ),
+          );
+          return;
+        }
+
+        const underWorkRes = await supabase
+          .from("varroa_submissions")
+          .select("id")
+          .eq("status", "UNDER_ARBEID")
+          .or(`assigned_to.eq.${access.userId},processed_by.eq.${access.userId}`)
+          .neq("id", item.id)
+          .order("updated_at", { ascending: true })
+          .limit(1)
+          .maybeSingle();
+
+        if (underWorkRes.error) throw underWorkRes.error;
+        const resumeId = String(underWorkRes.data?.id ?? "");
+        if (resumeId) {
+          window.location.assign(
+            appendAdminContext(
+              `${basePath}/admin/innsendinger/innsending/?id=${encodeURIComponent(resumeId)}`,
+              adminContextSearch,
+            ),
+          );
+          return;
+        }
+
+        window.location.assign(
+          appendAdminContext(`${basePath}/admin/innsendinger/?view=mine`, adminContextSearch),
+        );
+        return;
+      }
 
       if (action === "SAVE_AND_NEXT") {
         if (stayOnCurrentSubmission) {
@@ -409,6 +485,28 @@ export function ProductionSubmissionClient() {
           );
           return;
         }
+        const underWorkRes = await supabase
+          .from("varroa_submissions")
+          .select("id")
+          .eq("status", "UNDER_ARBEID")
+          .or(`assigned_to.eq.${access.userId},processed_by.eq.${access.userId}`)
+          .neq("id", item.id)
+          .order("updated_at", { ascending: true })
+          .limit(1)
+          .maybeSingle();
+
+        if (underWorkRes.error) throw underWorkRes.error;
+        const resumeId = String(underWorkRes.data?.id ?? "");
+        if (resumeId) {
+          window.location.assign(
+            appendAdminContext(
+              `${basePath}/admin/innsendinger/innsending/?id=${encodeURIComponent(resumeId)}`,
+              adminContextSearch,
+            ),
+          );
+          return;
+        }
+
         window.location.assign(
           appendAdminContext(`${basePath}/admin/innsendinger/?view=mine`, adminContextSearch),
         );
@@ -431,6 +529,8 @@ export function ProductionSubmissionClient() {
   const currentStatusUi = getStatusUi(item?.status ?? "NY");
   const qualityOptions = getQualityOptions();
   const latestReview = reviews[0] ?? null;
+  const isArchived = item?.status === "ARKIVERT";
+  const isApproved = item?.status === "GODKJENT" || item?.status === "KLAR_FOR_TRENING";
   const saveAndNextLabel = isController
     ? isLastImage
       ? "Kontroll fullført"
@@ -703,24 +803,31 @@ export function ProductionSubmissionClient() {
 
                   {access.canControl ? (
                     <>
-                      <button
-                        type="button"
-                        onClick={() => void persist("SAVE_AND_NEXT")}
-                        disabled={isSaving || isLastImage}
-                        className="h-12 rounded-2xl bg-amber-400 text-sm font-semibold text-zinc-950 active:opacity-90 disabled:opacity-40"
-                      >
-                        {saveAndNextLabel}
-                      </button>
                       {!isLastImage ? (
+                        <>
+                          <button
+                            type="button"
+                            onClick={() => void persist("SAVE_AND_NEXT")}
+                            disabled={isSaving}
+                            className="h-12 rounded-2xl bg-amber-400 text-sm font-semibold text-zinc-950 active:opacity-90 disabled:opacity-60"
+                          >
+                            {saveAndNextLabel}
+                          </button>
+                          <div className="rounded-2xl border border-zinc-800 bg-zinc-950 px-4 py-3 text-xs text-zinc-400">
+                            Gå gjennom alle bildene i saken. Godkjenning låses opp når du er på
+                            siste bilde.
+                          </div>
+                        </>
+                      ) : (
                         <div className="rounded-2xl border border-zinc-800 bg-zinc-950 px-4 py-3 text-xs text-zinc-400">
-                          Gå gjennom alle bildene i saken. Godkjenning låses opp når du er på
-                          siste bilde.
+                          Kontroll fullført. Velg Godkjenn, Godkjenn + trening, Send tilbake eller
+                          Arkiver. Neste sak åpnes automatisk.
                         </div>
-                      ) : null}
+                      )}
                       <button
                         type="button"
                         onClick={() => void persist("APPROVED")}
-                        disabled={isSaving || !isLastImage}
+                        disabled={isSaving || !isLastImage || isApproved || isArchived}
                         className="h-12 rounded-2xl border border-emerald-700 bg-emerald-950/40 text-sm font-semibold text-emerald-100 active:opacity-90 disabled:opacity-40"
                       >
                         {getActionButtonLabel("APPROVED")}
@@ -728,7 +835,12 @@ export function ProductionSubmissionClient() {
                       <button
                         type="button"
                         onClick={() => void persist("APPROVED_FOR_TRAINING")}
-                        disabled={isSaving || !isLastImage}
+                        disabled={
+                          isSaving ||
+                          !isLastImage ||
+                          item.status === "KLAR_FOR_TRENING" ||
+                          isArchived
+                        }
                         className="h-12 rounded-2xl border border-fuchsia-700 bg-fuchsia-950/40 text-sm font-semibold text-fuchsia-100 active:opacity-90 disabled:opacity-40"
                       >
                         {getActionButtonLabel("APPROVED_FOR_TRAINING")}
@@ -736,14 +848,12 @@ export function ProductionSubmissionClient() {
                       <button
                         type="button"
                         onClick={() => void persist("RETURNED")}
-                        disabled={isSaving}
+                        disabled={isSaving || isArchived}
                         className="h-12 rounded-2xl border border-amber-700 bg-amber-950/40 text-sm font-semibold text-amber-100 active:opacity-90 disabled:opacity-60"
                       >
                         {getActionButtonLabel("RETURNED")}
                       </button>
-                      {(item.status === "GODKJENT" ||
-                        item.status === "KLAR_FOR_TRENING" ||
-                        item.status === "ARKIVERT") ? (
+                      {item.status === "GODKJENT" || item.status === "KLAR_FOR_TRENING" ? (
                         <button
                           type="button"
                           onClick={() => void persist("ARCHIVED")}

@@ -32,6 +32,15 @@ export default function AdminArchivePage() {
     }
     return getAdminReturnInfo(window.location.search);
   }, []);
+  const adminLoginHref = useMemo(() => {
+    if (typeof window === "undefined") return `${basePath}/admin/`;
+    const params = new URLSearchParams(window.location.search);
+    const currentPath = window.location.pathname.startsWith(basePath)
+      ? window.location.pathname.slice(basePath.length) || "/"
+      : window.location.pathname;
+    params.set("next", `${currentPath}${window.location.search}`);
+    return `${basePath}/admin/?${params.toString()}`;
+  }, [basePath]);
 
   const [isAuthed, setIsAuthed] = useState(false);
   const [access, setAccess] = useState<VarroaAccess | null>(null);
@@ -53,7 +62,7 @@ export default function AdminArchivePage() {
       if (!session) {
         setAccess(null);
         setItems([]);
-        setLoadError("Logg inn for å se arkivet.");
+        window.location.replace(adminLoginHref);
         return;
       }
 
@@ -92,7 +101,7 @@ export default function AdminArchivePage() {
     } finally {
       setIsLoading(false);
     }
-  }, [supabase]);
+  }, [adminLoginHref, supabase]);
 
   useEffect(() => {
     const t = window.setTimeout(() => {

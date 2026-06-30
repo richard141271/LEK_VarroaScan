@@ -171,10 +171,16 @@ export function getHistoryActionLabel(action: string) {
   switch (action) {
     case "CLAIMED_NEXT":
       return "Neste sak hentet";
+    case "CONTROL_NEXT_IMAGE":
+      return "Neste kontrollbilde";
+    case "WORK_NEXT_IMAGE":
+      return "Neste bilde";
     case "SAVE_DRAFT":
       return "Lagring";
     case "READY_FOR_REVIEW":
       return "Klar for kontroll";
+    case "SAVE_AND_NEXT":
+      return "Lagre og neste";
     case "APPROVED":
       return "Godkjent";
     case "APPROVED_FOR_TRAINING":

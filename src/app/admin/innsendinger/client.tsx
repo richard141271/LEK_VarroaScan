@@ -37,6 +37,15 @@ export function AdminQueueClient() {
     }
     return getAdminReturnInfo(window.location.search);
   }, []);
+  const adminLoginHref = useMemo(() => {
+    if (typeof window === "undefined") return `${basePath}/admin/`;
+    const params = new URLSearchParams(window.location.search);
+    const currentPath = window.location.pathname.startsWith(basePath)
+      ? window.location.pathname.slice(basePath.length) || "/"
+      : window.location.pathname;
+    params.set("next", `${currentPath}${window.location.search}`);
+    return `${basePath}/admin/?${params.toString()}`;
+  }, [basePath]);
 
   const [isAuthed, setIsAuthed] = useState(false);
   const [access, setAccess] = useState<VarroaAccess | null>(null);
@@ -62,7 +71,7 @@ export function AdminQueueClient() {
         setAccess(null);
         setItems([]);
         setAvailableNewCount(0);
-        setLoadError("Logg inn for å åpne arbeidskøen.");
+        window.location.replace(adminLoginHref);
         return;
       }
 
@@ -114,7 +123,7 @@ export function AdminQueueClient() {
     } finally {
       setIsLoading(false);
     }
-  }, [supabase]);
+  }, [adminLoginHref, supabase]);
 
   useEffect(() => {
     const t = window.setTimeout(() => {
@@ -128,6 +137,52 @@ export function AdminQueueClient() {
     setLoadError(null);
     setIsLoading(true);
     try {
+      const userId = access?.userId;
+      if (userId) {
+        const underWorkRes = await supabase
+          .from("varroa_submissions")
+          .select("id")
+          .eq("status", "UNDER_ARBEID")
+          .or(`assigned_to.eq.${userId},processed_by.eq.${userId}`)
+          .order("updated_at", { ascending: true })
+          .limit(1)
+          .maybeSingle();
+
+        if (underWorkRes.error) throw underWorkRes.error;
+        const resumeId = String(underWorkRes.data?.id ?? "");
+        if (resumeId) {
+          window.location.assign(
+            appendAdminContext(
+              `${basePath}/admin/innsendinger/innsending/?id=${encodeURIComponent(resumeId)}`,
+              adminContextSearch,
+            ),
+          );
+          return;
+        }
+      }
+
+      if (access?.canControl) {
+        const reviewRes = await supabase
+          .from("varroa_submissions")
+          .select("id")
+          .eq("status", "KLAR_FOR_KONTROLL")
+          .order("created_at", { ascending: true })
+          .limit(1)
+          .maybeSingle();
+
+        if (reviewRes.error) throw reviewRes.error;
+        const reviewId = String(reviewRes.data?.id ?? "");
+        if (reviewId) {
+          window.location.assign(
+            appendAdminContext(
+              `${basePath}/admin/innsendinger/innsending/?id=${encodeURIComponent(reviewId)}`,
+              adminContextSearch,
+            ),
+          );
+          return;
+        }
+      }
+
       const res = await supabase.rpc("varroa_claim_next_submission");
       if (res.error) {
         if (isMissingWorkflowSchemaError(res.error)) {
