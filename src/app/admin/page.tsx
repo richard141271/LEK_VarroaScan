@@ -10,12 +10,14 @@ import { getSupabaseClient } from "@/lib/supabaseClient";
 import { useOnlineStatus } from "@/lib/useOnlineStatus";
 import { getVarroaAccess, type VarroaAccess } from "@/lib/varroaRoles";
 import {
+  formatWorkerLabel,
   formatDateTime,
   getRoleLabel,
   getStatusUi,
   getSubmissionSelect,
   getTypeLabel,
   getWorkflowMigrationMessage,
+  isAvailableControlSubmission,
   isMissingWorkflowSchemaError,
   type VarroaSubmissionRecord,
 } from "@/lib/varroaWorkflow";
@@ -263,6 +265,7 @@ export default function AdminInboxPage() {
           .from("varroa_submissions")
           .select("id")
           .eq("status", "KLAR_FOR_KONTROLL")
+          .neq("processed_by", userId ?? "")
           .order("created_at", { ascending: true })
           .limit(1)
           .maybeSingle();
@@ -339,8 +342,11 @@ export default function AdminInboxPage() {
   }, [access?.userId, items]);
 
   const reviewItems = useMemo(
-    () => items.filter((item) => item.status === "KLAR_FOR_KONTROLL").slice(0, 8),
-    [items],
+    () =>
+      items
+        .filter((item) => isAvailableControlSubmission(item, access?.userId))
+        .slice(0, 8),
+    [access?.userId, items],
   );
 
   const trainingItems = useMemo(
@@ -356,7 +362,7 @@ export default function AdminInboxPage() {
     { key: "UNDER_ARBEID", label: "Under arbeid", value: counts.UNDER_ARBEID, fallback: 0 },
     {
       key: "KLAR_FOR_KONTROLL",
-      label: "Klar for kontroll",
+      label: "Venter pa kontroll",
       value: counts.KLAR_FOR_KONTROLL,
       fallback: 0,
     },
@@ -620,10 +626,10 @@ export default function AdminInboxPage() {
                   <div className="flex items-center justify-between gap-3">
                     <div>
                       <div className="text-base font-semibold text-zinc-50">
-                        Klar for kontroll
+                        Venter pa kontroll
                       </div>
                       <div className="text-sm text-zinc-400">
-                        Studentarbeid som venter på godkjenning.
+                        Saker som venter pa andresjekk fra en annen bruker.
                       </div>
                     </div>
                     <a
@@ -639,7 +645,7 @@ export default function AdminInboxPage() {
                   <div className="mt-4 space-y-3">
                     {reviewItems.length === 0 ? (
                       <div className="rounded-2xl border border-zinc-800 bg-zinc-950 px-4 py-4 text-sm text-zinc-400">
-                        Ingen saker venter på kontroll.
+                        Ingen saker venter pa kontroll fra andre akkurat na.
                       </div>
                     ) : null}
                     {reviewItems.map((item) => (
@@ -656,6 +662,9 @@ export default function AdminInboxPage() {
                         </div>
                         <div className="mt-1 text-xs text-zinc-500">
                           {formatDateTime(item.updated_at ?? item.created_at)}
+                        </div>
+                        <div className="mt-2 text-xs text-zinc-400">
+                          Forste sjekk: {formatWorkerLabel(access?.userId, item.processed_by)}
                         </div>
                       </a>
                     ))}

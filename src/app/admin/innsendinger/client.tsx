@@ -11,11 +11,13 @@ import { getSupabaseClient } from "@/lib/supabaseClient";
 import { useOnlineStatus } from "@/lib/useOnlineStatus";
 import { getVarroaAccess, type VarroaAccess } from "@/lib/varroaRoles";
 import {
+  formatWorkerLabel,
   formatDateTime,
   getStatusUi,
   getSubmissionSelect,
   getTypeLabel,
   getWorkflowMigrationMessage,
+  isAvailableControlSubmission,
   isMissingWorkflowSchemaError,
   type VarroaSubmissionRecord,
 } from "@/lib/varroaWorkflow";
@@ -166,6 +168,7 @@ export function AdminQueueClient() {
           .from("varroa_submissions")
           .select("id")
           .eq("status", "KLAR_FOR_KONTROLL")
+          .neq("processed_by", userId ?? "")
           .order("created_at", { ascending: true })
           .limit(1)
           .maybeSingle();
@@ -224,7 +227,7 @@ export function AdminQueueClient() {
       );
     }
     if (view === "kontroll") {
-      return items.filter((item) => item.status === "KLAR_FOR_KONTROLL");
+      return items.filter((item) => isAvailableControlSubmission(item, userId));
     }
     if (view === "training") {
       return items.filter(
@@ -247,7 +250,7 @@ export function AdminQueueClient() {
       case "mine":
         return "Mine saker";
       case "kontroll":
-        return "Klar for kontroll";
+        return "Venter på kontroll";
       case "training":
         return "Godkjent / trening";
       case "archive":
@@ -257,17 +260,21 @@ export function AdminQueueClient() {
     }
   }, [access?.canSeeAll, view]);
 
-  const queueHelp = access?.canSeeAll
-    ? "Full kø med filtrering for produksjonsflyten."
-    : "Viser dine tildelte saker. Bruk Start arbeid for neste ledige sak.";
+  const queueHelp =
+    view === "kontroll"
+      ? "Viser saker som venter pa andresjekk. Egen forstesjekk skjules her."
+      : access?.canSeeAll
+        ? "Full ko med filtrering for produksjonsflyten."
+        : "Viser dine tildelte saker. Bruk Start arbeid for neste ledige sak.";
 
   const filterLinks: Array<{ view: QueueView; label: string }> = [
     { view: "all", label: access?.canSeeAll ? "Alle" : "Min kø" },
     { view: "mine", label: "Mine" },
-    { view: "kontroll", label: "Kontroll" },
+    { view: "kontroll", label: "Venter pa kontroll" },
     { view: "training", label: "Trening" },
     { view: "archive", label: "Arkiv" },
   ];
+  const ownerColumnLabel = view === "kontroll" ? "Forste sjekk" : "Tildelt";
 
   return (
     <div className="min-h-dvh px-4 pb-10 pt-8">
@@ -368,10 +375,10 @@ export function AdminQueueClient() {
             </section>
 
             <section className="overflow-hidden rounded-3xl border border-zinc-800 bg-zinc-900">
-              <div className="hidden grid-cols-[1.1fr_1fr_0.8fr_0.9fr_1.1fr_110px] gap-3 border-b border-zinc-800 px-5 py-4 text-xs font-semibold uppercase tracking-wide text-zinc-500 lg:grid">
+                <div className="hidden grid-cols-[1.1fr_1fr_0.8fr_0.9fr_1.1fr_110px] gap-3 border-b border-zinc-800 px-5 py-4 text-xs font-semibold uppercase tracking-wide text-zinc-500 lg:grid">
                 <div>Sak</div>
                 <div>Status</div>
-                <div>Tildelt</div>
+                  <div>{ownerColumnLabel}</div>
                 <div>Midd</div>
                 <div>Sist oppdatert</div>
                 <div>Åpne</div>
@@ -387,11 +394,9 @@ export function AdminQueueClient() {
                 {filteredItems.map((item) => {
                   const ui = getStatusUi(item.status);
                   const assignedLabel =
-                    item.assigned_to === access.userId
-                      ? "Meg"
-                      : item.assigned_to
-                        ? "Tildelt"
-                        : "Ledig";
+                    view === "kontroll"
+                      ? formatWorkerLabel(access.userId, item.processed_by)
+                      : formatWorkerLabel(access.userId, item.assigned_to);
                   return (
                     <a
                       key={item.id}

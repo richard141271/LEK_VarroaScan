@@ -12,6 +12,7 @@ import { useOnlineStatus } from "@/lib/useOnlineStatus";
 import { getVarroaAccess, type VarroaAccess } from "@/lib/varroaRoles";
 import {
   createSignedImages,
+  formatWorkerLabel,
   formatDateTime,
   getHistoryActionLabel,
   getQualityOptions,
@@ -19,9 +20,11 @@ import {
   getSubmissionSelect,
   getTypeLabel,
   getWorkflowMigrationMessage,
+  isAvailableControlSubmission,
   isMissingWorkflowSchemaError,
   type SignedImage,
   type VarroaSubmissionHistory,
+  type VarroaSubmissionImageReview,
   type VarroaSubmissionRecord,
   type VarroaSubmissionReview,
 } from "@/lib/varroaWorkflow";
@@ -52,6 +55,39 @@ function getActionButtonLabel(action: SaveAction) {
     case "ARCHIVED":
       return "Arkiver";
   }
+}
+
+type ImageReviewDraft = {
+  id?: string;
+  imageIndex: number;
+  miteCountInput: string;
+  imageQuality: string;
+  comment: string;
+  trainingReady: boolean;
+  approved: boolean;
+};
+
+function createEmptyImageDraft(imageIndex: number): ImageReviewDraft {
+  return {
+    imageIndex,
+    miteCountInput: "",
+    imageQuality: "",
+    comment: "",
+    trainingReady: false,
+    approved: false,
+  };
+}
+
+function createDraftFromImageReview(review: VarroaSubmissionImageReview): ImageReviewDraft {
+  return {
+    id: review.id,
+    imageIndex: review.image_index,
+    miteCountInput: review.mite_count != null ? String(review.mite_count) : "",
+    imageQuality: review.image_quality ?? "",
+    comment: review.comment ?? "",
+    trainingReady: Boolean(review.training_ready),
+    approved: Boolean(review.approved),
+  };
 }
 
 export function ProductionSubmissionClient() {
@@ -86,20 +122,16 @@ export function ProductionSubmissionClient() {
   const [images, setImages] = useState<SignedImage[]>([]);
   const [selectedImage, setSelectedImage] = useState(0);
   const [reviews, setReviews] = useState<VarroaSubmissionReview[]>([]);
+  const [imageDrafts, setImageDrafts] = useState<Record<number, ImageReviewDraft>>({});
   const [history, setHistory] = useState<VarroaSubmissionHistory[]>([]);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
-
-  const [miteCountInput, setMiteCountInput] = useState("");
-  const [imageQuality, setImageQuality] = useState("");
-  const [reviewComment, setReviewComment] = useState("");
-  const [trainingReady, setTrainingReady] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [saveOk, setSaveOk] = useState<string | null>(null);
   const [isSaving, setIsSaving] = useState(false);
   const totalImages = images.length;
   const isLastImage = totalImages === 0 || selectedImage >= totalImages - 1;
-  const isController = Boolean(access?.canControl);
+  const currentDraft = imageDrafts[selectedImage] ?? createEmptyImageDraft(selectedImage);
 
   const reload = useCallback(async () => {
     setLoadError(null);
@@ -137,7 +169,7 @@ export function ProductionSubmissionClient() {
         return;
       }
 
-      const [submissionRes, reviewsRes, historyRes] = await Promise.all([
+      const [submissionRes, reviewsRes, historyRes, imageReviewsRes] = await Promise.all([
         supabase
           .from("varroa_submissions")
           .select(getSubmissionSelect())
@@ -157,6 +189,14 @@ export function ProductionSubmissionClient() {
           .eq("submission_id", id)
           .order("created_at", { ascending: false })
           .limit(40),
+        supabase
+          .from("varroa_submission_review_images")
+          .select(
+            "id,submission_id,review_id,created_at,updated_at,created_by,image_index,mite_count,image_quality,comment,training_ready,approved",
+          )
+          .eq("submission_id", id)
+          .eq("created_by", nextAccess.userId)
+          .order("image_index", { ascending: true }),
       ]);
 
       if (submissionRes.error) {
@@ -186,10 +226,19 @@ export function ProductionSubmissionClient() {
         }
         throw historyRes.error;
       }
+      if (imageReviewsRes.error) {
+        if (isMissingWorkflowSchemaError(imageReviewsRes.error)) {
+          setLoadError(getWorkflowMigrationMessage());
+          return;
+        }
+        throw imageReviewsRes.error;
+      }
 
       const loaded = submissionRes.data as unknown as VarroaSubmissionRecord;
       const loadedReviews =
         (reviewsRes.data ?? []) as unknown as VarroaSubmissionReview[];
+      const loadedImageReviews =
+        (imageReviewsRes.data ?? []) as unknown as VarroaSubmissionImageReview[];
       const loadedHistory =
         (historyRes.data ?? []) as unknown as VarroaSubmissionHistory[];
       const signedImages = await createSignedImages(
@@ -211,16 +260,30 @@ export function ProductionSubmissionClient() {
       setSelectedImage(
         signedImages.length === 0 ? 0 : Math.min(Math.max(nextImageIndex, 0), signedImages.length - 1),
       );
-      setMiteCountInput(
-        latestReview?.mite_count != null
-          ? String(latestReview.mite_count)
-          : loaded.manual_mite_count != null
-            ? String(loaded.manual_mite_count)
-            : "",
-      );
-      setImageQuality(latestReview?.image_quality ?? loaded.quality_rating ?? "");
-      setReviewComment(latestReview?.comment ?? loaded.review_comment ?? "");
-      setTrainingReady(Boolean(latestReview?.training_ready ?? loaded.training_ready));
+      const nextDrafts: Record<number, ImageReviewDraft> = {};
+      for (let index = 0; index < signedImages.length; index += 1) {
+        nextDrafts[index] = createEmptyImageDraft(index);
+      }
+      for (const imageReview of loadedImageReviews) {
+        nextDrafts[imageReview.image_index] = createDraftFromImageReview(imageReview);
+      }
+      if (loadedImageReviews.length === 0 && latestReview) {
+        const fallbackIndex = Math.min(Math.max(nextImageIndex, 0), Math.max(signedImages.length - 1, 0));
+        nextDrafts[fallbackIndex] = {
+          imageIndex: fallbackIndex,
+          miteCountInput:
+            latestReview.mite_count != null
+              ? String(latestReview.mite_count)
+              : loaded.manual_mite_count != null
+                ? String(loaded.manual_mite_count)
+                : "",
+          imageQuality: latestReview.image_quality ?? loaded.quality_rating ?? "",
+          comment: latestReview.comment ?? loaded.review_comment ?? "",
+          trainingReady: Boolean(latestReview.training_ready ?? loaded.training_ready),
+          approved: Boolean(latestReview.approved),
+        };
+      }
+      setImageDrafts(nextDrafts);
     } catch (e) {
       const message =
         typeof e === "object" && e && "message" in e
@@ -230,6 +293,7 @@ export function ProductionSubmissionClient() {
       setItem(null);
       setImages([]);
       setReviews([]);
+      setImageDrafts({});
       setHistory([]);
     } finally {
       setIsLoading(false);
@@ -242,6 +306,35 @@ export function ProductionSubmissionClient() {
     }, 0);
     return () => window.clearTimeout(t);
   }, [reload]);
+
+  const isControlStage = Boolean(
+    item &&
+      access?.canControl &&
+      isAvailableControlSubmission(item, access.userId) &&
+      item.processed_by,
+  );
+  const isFinalized = item?.status === "GODKJENT" || item?.status === "KLAR_FOR_TRENING";
+  const canDoWork = Boolean(item && access?.role && !isControlStage && item.status !== "ARKIVERT" && !isFinalized);
+  const totalDraftMites = Object.values(imageDrafts).reduce((sum, draft) => {
+    if (draft.miteCountInput.trim() === "") return sum;
+    const value = Number.parseInt(draft.miteCountInput.trim(), 10);
+    return Number.isNaN(value) ? sum : sum + value;
+  }, 0);
+  const allImagesTrainingReady =
+    totalImages > 0 &&
+    Array.from({ length: totalImages }, (_, index) => imageDrafts[index] ?? createEmptyImageDraft(index)).every(
+      (draft) => draft.trainingReady,
+    );
+
+  const updateCurrentDraft = (patch: Partial<ImageReviewDraft>) => {
+    setImageDrafts((prev) => ({
+      ...prev,
+      [selectedImage]: {
+        ...(prev[selectedImage] ?? createEmptyImageDraft(selectedImage)),
+        ...patch,
+      },
+    }));
+  };
 
   const persist = async (action: SaveAction) => {
     setSaveError(null);
@@ -260,18 +353,26 @@ export function ProductionSubmissionClient() {
       return;
     }
 
-    const miteCount =
-      miteCountInput.trim() === "" ? null : Number.parseInt(miteCountInput.trim(), 10);
-    if (miteCountInput.trim() !== "" && Number.isNaN(miteCount)) {
-      setSaveError("Antall midd må være et helt tall.");
+    const draftEntries = Array.from({ length: totalImages }, (_, index) => imageDrafts[index] ?? createEmptyImageDraft(index));
+    const invalidDraft = draftEntries.find((draft) => {
+      if (draft.miteCountInput.trim() === "") return false;
+      return Number.isNaN(Number.parseInt(draft.miteCountInput.trim(), 10));
+    });
+    if (invalidDraft) {
+      setSaveError(`Antall midd ma vare et helt tall pa bilde ${invalidDraft.imageIndex + 1}.`);
       return;
     }
 
+    const currentMiteCount =
+      currentDraft.miteCountInput.trim() === ""
+        ? null
+        : Number.parseInt(currentDraft.miteCountInput.trim(), 10);
+
     const nowIso = new Date().toISOString();
     let nextStatus = item.status;
-    let nextTrainingReady = trainingReady;
+    let nextTrainingReady = allImagesTrainingReady;
     let approved = false;
-    const historyComment = reviewComment.trim() || null;
+    const historyComment = currentDraft.comment.trim() || null;
     const stayOnCurrentSubmission =
       action === "SAVE_AND_NEXT" && selectedImage < Math.max(images.length - 1, 0);
     const nextImageIndex = stayOnCurrentSubmission
@@ -280,18 +381,24 @@ export function ProductionSubmissionClient() {
 
     switch (action) {
       case "SAVE_DRAFT":
-        nextStatus = item.status === "NY" ? "UNDER_ARBEID" : item.status;
+        nextStatus =
+          isControlStage
+            ? item.status
+            : item.status === "NY" || item.status === "KLAR_FOR_KONTROLL"
+              ? "UNDER_ARBEID"
+              : item.status;
         break;
       case "READY_FOR_REVIEW":
         nextStatus = "KLAR_FOR_KONTROLL";
         break;
       case "SAVE_AND_NEXT":
-        nextStatus =
-          access.role === "STUDENT"
-            ? stayOnCurrentSubmission
-              ? "UNDER_ARBEID"
-              : "KLAR_FOR_KONTROLL"
-            : item.status;
+        nextStatus = isControlStage
+          ? item.status
+          : stayOnCurrentSubmission
+            ? item.status === "KLAR_FOR_KONTROLL"
+              ? "KLAR_FOR_KONTROLL"
+              : "UNDER_ARBEID"
+            : "KLAR_FOR_KONTROLL";
         break;
       case "APPROVED":
         nextStatus = "GODKJENT";
@@ -313,7 +420,7 @@ export function ProductionSubmissionClient() {
 
     const isImageStep = action === "SAVE_AND_NEXT" && stayOnCurrentSubmission;
     const historyAction = isImageStep
-      ? access.canControl
+      ? isControlStage
         ? "CONTROL_NEXT_IMAGE"
         : "WORK_NEXT_IMAGE"
       : action;
@@ -322,12 +429,12 @@ export function ProductionSubmissionClient() {
 
     const updatePatch: Record<string, unknown> = {
       status: nextStatus,
-      manual_mite_count: miteCount,
-      quality_rating: imageQuality || null,
+      manual_mite_count: totalDraftMites,
+      quality_rating: currentDraft.imageQuality || null,
       review_comment: historyComment,
       training_ready: nextTrainingReady,
       current_role_owner:
-        action === "RETURNED" ? "STUDENT" : access.role,
+        action === "RETURNED" ? "ARBEID" : action === "READY_FOR_REVIEW" ? "KONTROLL" : access.role,
     };
 
     if (action === "SAVE_DRAFT" || action === "READY_FOR_REVIEW" || action === "SAVE_AND_NEXT") {
@@ -359,26 +466,61 @@ export function ProductionSubmissionClient() {
 
     setIsSaving(true);
     try {
-      const ownReview = reviews.find((review) => review.created_by === access.userId);
-      const latestReview = ownReview ?? reviews[0] ?? null;
-      const reviewRes = await supabase.from("varroa_submission_reviews").upsert(
-        {
-          submission_id: item.id,
-          created_by: access.userId,
-          mite_count: miteCount,
-          image_quality: imageQuality || null,
-          comment: historyComment,
-          training_ready: nextTrainingReady,
-          approved,
-          current_image_index: nextImageIndex,
-          image_notes: latestReview?.image_notes ?? [],
-        },
-        {
+      const reviewPayload = {
+        submission_id: item.id,
+        created_by: access.userId,
+        mite_count: currentMiteCount,
+        image_quality: currentDraft.imageQuality || null,
+        comment: historyComment,
+        training_ready: nextTrainingReady,
+        approved,
+        current_image_index: nextImageIndex,
+        image_notes: draftEntries.map((draft) => ({
+          image_index: draft.imageIndex,
+          mite_count:
+            draft.miteCountInput.trim() === ""
+              ? null
+              : Number.parseInt(draft.miteCountInput.trim(), 10),
+          image_quality: draft.imageQuality || null,
+          comment: draft.comment.trim() || null,
+          training_ready: draft.trainingReady,
+          approved: approved || draft.approved,
+        })),
+      };
+      const reviewRes = await supabase
+        .from("varroa_submission_reviews")
+        .upsert(reviewPayload, {
           onConflict: "submission_id,created_by",
-        },
-      );
+        })
+        .select("id")
+        .single();
 
       if (reviewRes.error) throw reviewRes.error;
+      const reviewId = String(reviewRes.data.id);
+
+      const imageReviewRows = draftEntries.map((draft) => ({
+        id: draft.id,
+        submission_id: item.id,
+        review_id: reviewId,
+        created_by: access.userId,
+        image_index: draft.imageIndex,
+        mite_count:
+          draft.miteCountInput.trim() === ""
+            ? null
+            : Number.parseInt(draft.miteCountInput.trim(), 10),
+        image_quality: draft.imageQuality || null,
+        comment: draft.comment.trim() || null,
+        training_ready: draft.trainingReady,
+        approved: approved || draft.approved,
+      }));
+      const imageReviewRes = await supabase
+        .from("varroa_submission_review_images")
+        .upsert(imageReviewRows, {
+          onConflict: "review_id,image_index",
+          defaultToNull: false,
+        });
+
+      if (imageReviewRes.error) throw imageReviewRes.error;
 
       const updateRes = await supabase
         .from("varroa_submissions")
@@ -395,8 +537,8 @@ export function ProductionSubmissionClient() {
         comment: historyComment,
         payload: {
           role: access.role,
-          mite_count: miteCount,
-          image_quality: imageQuality || null,
+          mite_count: currentMiteCount,
+          image_quality: currentDraft.imageQuality || null,
           training_ready: nextTrainingReady,
           approved,
           current_image_index: nextImageIndex,
@@ -418,6 +560,7 @@ export function ProductionSubmissionClient() {
           .from("varroa_submissions")
           .select("id")
           .eq("status", "KLAR_FOR_KONTROLL")
+          .neq("processed_by", access.userId)
           .neq("id", item.id)
           .order("created_at", { ascending: true })
           .limit(1)
@@ -468,7 +611,7 @@ export function ProductionSubmissionClient() {
           await reload();
           return;
         }
-        if (access.canControl) {
+        if (isControlStage) {
           setSaveOk("Alle bilder er kontrollert. Du kan nå godkjenne saken.");
           await reload();
           return;
@@ -532,7 +675,7 @@ export function ProductionSubmissionClient() {
   const isArchived = item?.status === "ARKIVERT";
   const isApproved = item?.status === "GODKJENT" || item?.status === "KLAR_FOR_TRENING";
   const canBrowseImages = images.length > 1 && !isArchived;
-  const saveAndNextLabel = isController
+  const saveAndNextLabel = isControlStage
     ? isLastImage
       ? "Kontroll fullført"
       : "Neste kontrollbilde"
@@ -616,15 +759,15 @@ export function ProductionSubmissionClient() {
                 <div className="mt-4 grid grid-cols-1 gap-3 text-sm text-zinc-300 md:grid-cols-2 xl:grid-cols-4">
                   <div>
                     <div className="text-zinc-500">Tildelt</div>
-                    <div className="mt-1">{item.assigned_to === access.userId ? "Meg" : item.assigned_to ?? "Ingen"}</div>
+                    <div className="mt-1">{formatWorkerLabel(access.userId, item.assigned_to)}</div>
                   </div>
                   <div>
-                    <div className="text-zinc-500">Behandlet av</div>
-                    <div className="mt-1">{item.processed_by ?? "—"}</div>
+                    <div className="text-zinc-500">Forste sjekk</div>
+                    <div className="mt-1">{formatWorkerLabel(access.userId, item.processed_by)}</div>
                   </div>
                   <div>
                     <div className="text-zinc-500">Godkjent av</div>
-                    <div className="mt-1">{item.approved_by ?? "—"}</div>
+                    <div className="mt-1">{formatWorkerLabel(access.userId, item.approved_by)}</div>
                   </div>
                   <div>
                     <div className="text-zinc-500">Oppdatert</div>
@@ -704,17 +847,23 @@ export function ProductionSubmissionClient() {
               <section className="rounded-3xl border border-zinc-800 bg-zinc-900 p-5">
                 <div className="text-base font-semibold text-zinc-50">Arbeidsfelt</div>
                 <div className="mt-1 text-sm text-zinc-400">
-                  {isController
-                    ? "Kontroller alle bildene i saken. Godkjenning åpnes først når siste bilde er valgt."
+                  {isControlStage
+                    ? "Denne saken venter pa kontroll av en annen bruker. Du kan ga gjennom alle bildene og godkjenne eller sende tilbake."
                     : "Du kan gå fritt mellom bildene, rette vurderingen og sende saken til kontroll når du er klar."}
                 </div>
+                {item.status === "KLAR_FOR_KONTROLL" && item.processed_by === access.userId ? (
+                  <div className="mt-3 rounded-2xl border border-sky-900/50 bg-sky-950/30 px-4 py-3 text-xs text-sky-100">
+                    Saken venter pa kontroll fra en annen bruker. Du kan fortsatt rette bildene og
+                    sende den til kontroll pa nytt, men du kan ikke godkjenne din egen forstesjekk.
+                  </div>
+                ) : null}
 
                 <div className="mt-4 grid grid-cols-1 gap-4">
                   <label className="block">
                     <div className="text-sm font-semibold text-zinc-200">Antall midd</div>
                     <input
-                      value={miteCountInput}
-                      onChange={(e) => setMiteCountInput(e.target.value)}
+                      value={currentDraft.miteCountInput}
+                      onChange={(e) => updateCurrentDraft({ miteCountInput: e.target.value })}
                       inputMode="numeric"
                       placeholder="F.eks. 14"
                       className="mt-2 h-12 w-full rounded-2xl border border-zinc-700 bg-zinc-950 px-4 text-sm text-zinc-50 placeholder:text-zinc-600 focus:outline-none focus:ring-2 focus:ring-amber-300"
@@ -724,8 +873,8 @@ export function ProductionSubmissionClient() {
                   <label className="block">
                     <div className="text-sm font-semibold text-zinc-200">Bildekvalitet</div>
                     <select
-                      value={imageQuality}
-                      onChange={(e) => setImageQuality(e.target.value)}
+                      value={currentDraft.imageQuality}
+                      onChange={(e) => updateCurrentDraft({ imageQuality: e.target.value })}
                       className="mt-2 h-12 w-full rounded-2xl border border-zinc-700 bg-zinc-950 px-4 text-sm text-zinc-50 focus:outline-none focus:ring-2 focus:ring-amber-300"
                     >
                       {qualityOptions.map((option) => (
@@ -737,10 +886,10 @@ export function ProductionSubmissionClient() {
                   </label>
 
                   <label className="block">
-                    <div className="text-sm font-semibold text-zinc-200">Kommentar</div>
+                    <div className="text-sm font-semibold text-zinc-200">Kommentar for dette bildet</div>
                     <textarea
-                      value={reviewComment}
-                      onChange={(e) => setReviewComment(e.target.value)}
+                      value={currentDraft.comment}
+                      onChange={(e) => updateCurrentDraft({ comment: e.target.value })}
                       rows={5}
                       className="mt-2 w-full rounded-2xl border border-zinc-700 bg-zinc-950 px-4 py-3 text-sm text-zinc-50 placeholder:text-zinc-600 focus:outline-none focus:ring-2 focus:ring-amber-300"
                       placeholder="Observasjoner, usikkerhet, kvalitet eller vurdering."
@@ -750,11 +899,11 @@ export function ProductionSubmissionClient() {
                   <label className="flex items-center gap-3 rounded-2xl border border-zinc-800 bg-zinc-950 px-4 py-3">
                     <input
                       type="checkbox"
-                      checked={trainingReady}
-                      onChange={(e) => setTrainingReady(e.target.checked)}
+                      checked={currentDraft.trainingReady}
+                      onChange={(e) => updateCurrentDraft({ trainingReady: e.target.checked })}
                       className="h-4 w-4 rounded border-zinc-700 bg-zinc-950 text-amber-400 focus:ring-amber-300"
                     />
-                    <span className="text-sm font-medium text-zinc-200">Klar for trening</span>
+                    <span className="text-sm font-medium text-zinc-200">Dette bildet er klart for trening</span>
                   </label>
                 </div>
 
@@ -786,7 +935,7 @@ export function ProductionSubmissionClient() {
                     {isSaving ? "Lagrer…" : getActionButtonLabel("SAVE_DRAFT")}
                   </button>
 
-                  {access.role === "STUDENT" ? (
+                  {canDoWork ? (
                     <>
                       <button
                         type="button"
@@ -806,14 +955,14 @@ export function ProductionSubmissionClient() {
                       </button>
                       {!isLastImage ? (
                         <div className="rounded-2xl border border-zinc-800 bg-zinc-950 px-4 py-3 text-xs text-zinc-400">
-                          Fullfør alle bildene i saken. Når siste bilde er lagret, går du
-                          automatisk videre til neste sak.
+                          Jobb deg gjennom bildene og send saken til kontroll nar du er klar. Pa
+                          siste bilde kan du enten sende til kontroll eller ga videre til neste sak.
                         </div>
                       ) : null}
                     </>
                   ) : null}
 
-                  {access.canControl ? (
+                  {isControlStage ? (
                     <>
                       {!isLastImage ? (
                         <>

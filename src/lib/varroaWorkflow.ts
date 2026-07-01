@@ -55,6 +55,21 @@ export type VarroaSubmissionReview = {
   image_notes: unknown;
 };
 
+export type VarroaSubmissionImageReview = {
+  id: string;
+  submission_id: string;
+  review_id: string;
+  created_at: string;
+  updated_at: string;
+  created_by: string;
+  image_index: number;
+  mite_count: number | null;
+  image_quality: string | null;
+  comment: string | null;
+  training_ready: boolean;
+  approved: boolean;
+};
+
 export type VarroaSubmissionHistory = {
   id: string;
   submission_id: string;
@@ -108,7 +123,7 @@ export function getStatusUi(status: string) {
       };
     case "KLAR_FOR_KONTROLL":
       return {
-        label: "Klar for kontroll",
+        label: "Venter pa kontroll",
         chipClass: "border-sky-300 bg-sky-400 text-zinc-950",
         accentClass: "bg-sky-400",
       };
@@ -178,7 +193,7 @@ export function getHistoryActionLabel(action: string) {
     case "SAVE_DRAFT":
       return "Lagring";
     case "READY_FOR_REVIEW":
-      return "Klar for kontroll";
+      return "Sendt til kontroll";
     case "SAVE_AND_NEXT":
       return "Lagre og neste";
     case "APPROVED":
@@ -202,6 +217,7 @@ export function isMissingWorkflowSchemaError(value: unknown) {
     message.includes("varroa_user_roles") ||
     message.includes("varroa_submission_history") ||
     message.includes("varroa_submission_reviews") ||
+    message.includes("varroa_submission_review_images") ||
     message.includes("assigned_to") ||
     message.includes("updated_at") ||
     message.includes("current_image_index") ||
@@ -212,7 +228,25 @@ export function isMissingWorkflowSchemaError(value: unknown) {
 }
 
 export function getWorkflowMigrationMessage() {
-  return "Produksjonsflyten krever ny DB-migrasjon. Kjør migrasjon 20260612_0007_production_workflow.sql i Supabase først.";
+  return "Produksjonsflyten krever ny DB-migrasjon. Kjor siste workflow-migrasjoner i Supabase forst.";
+}
+
+export function isAvailableControlSubmission(
+  item: Pick<VarroaSubmissionRecord, "status" | "processed_by">,
+  userId: string | null | undefined,
+) {
+  if (item.status !== "KLAR_FOR_KONTROLL") return false;
+  if (!userId) return true;
+  return item.processed_by !== userId;
+}
+
+export function formatWorkerLabel(
+  userId: string | null | undefined,
+  workerId: string | null | undefined,
+) {
+  if (!workerId) return "Ingen";
+  if (userId && workerId === userId) return "Meg";
+  return `${workerId.slice(0, 8)}...`;
 }
 
 export async function createSignedImages(
