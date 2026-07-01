@@ -531,6 +531,7 @@ export function ProductionSubmissionClient() {
   const latestReview = reviews[0] ?? null;
   const isArchived = item?.status === "ARKIVERT";
   const isApproved = item?.status === "GODKJENT" || item?.status === "KLAR_FOR_TRENING";
+  const canBrowseImages = images.length > 1 && !isArchived;
   const saveAndNextLabel = isController
     ? isLastImage
       ? "Kontroll fullført"
@@ -641,6 +642,12 @@ export function ProductionSubmissionClient() {
                 <div className="mt-2 text-sm text-zinc-400">
                   Bilde {Math.min(selectedImage + 1, Math.max(totalImages, 1))} av {Math.max(totalImages, 1)}
                 </div>
+                {canBrowseImages ? (
+                  <div className="mt-2 text-xs text-zinc-500">
+                    Klikk miniatyrene for å bytte mellom bilder og rette vurderingen før saken er
+                    ferdigstilt.
+                  </div>
+                ) : null}
                 <div className="mt-4 overflow-hidden rounded-3xl border border-zinc-800 bg-zinc-950">
                   {currentImage ? (
                     <img
@@ -658,10 +665,13 @@ export function ProductionSubmissionClient() {
                 {images.length > 1 ? (
                   <div className="mt-4 grid grid-cols-4 gap-3 xl:grid-cols-6">
                     {images.map((image, index) => (
-                      <div
+                      <button
+                        type="button"
                         key={image.path}
+                        onClick={() => setSelectedImage(index)}
+                        disabled={isSaving || isArchived}
                         className={[
-                          "overflow-hidden rounded-2xl border bg-zinc-950",
+                          "overflow-hidden rounded-2xl border bg-zinc-950 text-left transition active:opacity-90 disabled:cursor-default disabled:opacity-80",
                           index === selectedImage
                             ? "border-amber-300 ring-2 ring-amber-300/40"
                             : index < selectedImage
@@ -675,13 +685,15 @@ export function ProductionSubmissionClient() {
                           className="h-24 w-24 object-cover"
                         />
                         <div className="border-t border-zinc-800 px-2 py-1 text-center text-[10px] font-semibold text-zinc-400">
-                          {index < selectedImage
-                            ? "Ferdig"
-                            : index === selectedImage
-                              ? "Nå"
-                              : "Neste"}
+                          {index === selectedImage
+                            ? "Nå"
+                            : isApproved
+                              ? "Vis"
+                              : index < selectedImage
+                                ? "Åpne igjen"
+                                : "Åpne"}
                         </div>
-                      </div>
+                      </button>
                     ))}
                   </div>
                 ) : null}
@@ -693,8 +705,8 @@ export function ProductionSubmissionClient() {
                 <div className="text-base font-semibold text-zinc-50">Arbeidsfelt</div>
                 <div className="mt-1 text-sm text-zinc-400">
                   {isController
-                    ? "Kontroller bilde for bilde. Godkjenning åpnes først når siste bilde er ferdig."
-                    : "Klar for høy fart. Lagre kladd, send til kontroll eller gå rett til neste."}
+                    ? "Kontroller alle bildene i saken. Godkjenning åpnes først når siste bilde er valgt."
+                    : "Du kan gå fritt mellom bildene, rette vurderingen og sende saken til kontroll når du er klar."}
                 </div>
 
                 <div className="mt-4 grid grid-cols-1 gap-4">
