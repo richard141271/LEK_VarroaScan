@@ -13,10 +13,21 @@ const geistMono = Geist_Mono({
   subsets: ["latin"],
 });
 
+const basePath = (() => {
+  const envBase = process.env.NEXT_PUBLIC_BASE_PATH;
+  if (envBase && envBase !== "/" && envBase !== "") return envBase;
+  const repo = process.env.GITHUB_REPOSITORY?.split("/")[1];
+  if (process.env.GITHUB_PAGES === "true" && repo) return `/${repo}`;
+  return "";
+})();
+const manifestPath = basePath
+  ? `${basePath.replace(/\/$/, "")}/manifest.webmanifest`
+  : "/manifest.webmanifest";
+
 export const metadata: Metadata = {
   title: "LEK-VarroaScan™️",
   description: "Datainnsamling av bunnbrett-bilder for varroa",
-  manifest: "/manifest.webmanifest",
+  manifest: manifestPath,
 };
 
 export const viewport: Viewport = {
