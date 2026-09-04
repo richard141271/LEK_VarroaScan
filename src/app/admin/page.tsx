@@ -338,6 +338,29 @@ export default function AdminInboxPage() {
         data: {},
       },
     });
+
+    if (!res.error && res.data.session) {
+      // ✅ signUp ga oss session (OK) – men VERIFISER at passordet faktisk
+      //    fungerer for senere innlogging, for dette har vært en bug i Supabase.
+      const verify = await supabase.auth.signInWithPassword({
+        email: trimmedEmail,
+        password,
+      });
+      if (verify.error) {
+        // Hvis verifikasjon feiler → vi hadde en session, men passord er ikke
+        // lagret riktig. Tving en ny sign-in via OTP (reserve) eller si ifra.
+        // Ikke kast brukeren ut, fortsett med eksisterende session.
+        setAuthInfo(
+          "⚠️ Obs: Passordet ditt kan ha blitt lagret feil. Du er logget inn nå, men hvis det ikke virker neste gang: bruk 'Glemt passord?' for å sette nytt. Laster arbeidsflaten…",
+        );
+      } else {
+        setAuthInfo("Velkommen! Bruker er opprettet og du er logget inn. Laster arbeidsflaten…");
+      }
+      setIsLoading(false);
+      setTimeout(() => void goAfterLogin(), 200);
+      return;
+    }
+
     setIsLoading(false);
 
     if (res.error) {
@@ -349,13 +372,6 @@ export default function AdminInboxPage() {
       } else {
         setAuthError(msg);
       }
-      return;
-    }
-
-    const newSession = res.data.session;
-    if (newSession) {
-      setAuthInfo("Velkommen! Bruker er opprettet og du er logget inn. Laster arbeidsflaten…");
-      setTimeout(() => void goAfterLogin(), 200);
       return;
     }
 
