@@ -77,6 +77,16 @@ export function InnsendingerPage({
   const [loadError, setLoadError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
 
+  const adminLoginHref = useMemo(() => {
+    if (typeof window === "undefined") return `${basePath}/admin/`;
+    const params = new URLSearchParams(window.location.search);
+    const currentPath = window.location.pathname.startsWith(basePath)
+      ? window.location.pathname.slice(basePath.length) || "/"
+      : window.location.pathname;
+    params.set("next", `${currentPath}${window.location.search}`);
+    return `${basePath}/admin/?${params.toString()}`;
+  }, [basePath]);
+
   const load = useCallback(async () => {
     setLoadError(null);
     setIsLoading(true);
@@ -99,7 +109,8 @@ export function InnsendingerPage({
         setIsAdmin(false);
         setItems([]);
         setThumbs({});
-        setLoadError("Logg inn som admin for å se alle innsendinger.");
+        // Ikke vis noe dum boks – send direkte til login (bevar next-path)
+        window.location.replace(adminLoginHref);
         return;
       }
 
@@ -108,7 +119,7 @@ export function InnsendingerPage({
       if (!admin) {
         setItems([]);
         setThumbs({});
-        setLoadError("Kun admin kan se alle innsendinger.");
+        window.location.replace(adminLoginHref);
         return;
       }
 

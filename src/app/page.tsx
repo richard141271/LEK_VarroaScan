@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { usePathname } from "next/navigation";
 import { getAppVersion } from "@/lib/appVersion";
 import { getDeviceInfo } from "@/lib/deviceInfo";
@@ -10,13 +10,15 @@ import { useOnlineStatus } from "@/lib/useOnlineStatus";
 
 type SubmissionType = "BUNNBRETT_FOTO" | "KONTROLLFOTO";
 
-const MAX_IMAGES_PER_SUBMISSION = 6;
 const MAX_FILE_SIZE_MB = 15;
+const MOBILE_CAMERA_LOOP_RE = /iPhone|iPad|iPod|Android/i;
 
 type LocalImage = {
   id: string;
   file: File;
   previewUrl: string;
+  note: string;
+  noteOpen: boolean;
 };
 
 function formatBytes(bytes: number) {
@@ -50,6 +52,13 @@ function normalizeErrorMessage(e: unknown) {
   }
 
   return raw;
+}
+
+function isMissingImageNotesColumnError(value: unknown) {
+  if (!value || typeof value !== "object") return false;
+  if (!("message" in value)) return false;
+  const message = String((value as { message?: unknown }).message ?? "");
+  return message.includes("image_notes");
 }
 
 function normalizeSource(value: string | null) {
@@ -178,39 +187,6 @@ function isLikelyFromBiensVokter(returnUrl: string | null, sourceParam: string |
   }
 }
 
-function isBvHintEligibleFromSearch(search: string) {
-  const params = new URLSearchParams(search);
-  const source = normalizeSource(params.get("source"));
-
-  if (source === "biens-vokter") return true;
-
-  const keys = ["returnTo", "return_to", "backTo", "back_to", "return", "back"];
-  for (const key of keys) {
-    const value = normalizeReturnUrl(params.get(key));
-    if (!value) continue;
-    try {
-      const u = new URL(value);
-      const h = u.hostname.toLowerCase();
-      if (h === "lekbie.no" || h.endsWith(".lekbie.no")) return true;
-      if (h.includes("biens-vokter")) return true;
-    } catch {}
-  }
-
-  return false;
-}
-
-function shouldShowBvAppHintNow() {
-  if (typeof window === "undefined") return false;
-  if (isStandaloneApp()) return false;
-  if (isBvHintEligibleFromSearch(window.location.search)) return true;
-
-  const ref = (document.referrer ?? "").toLowerCase();
-  if (!ref) return false;
-  if (ref.includes("biens-vokter")) return true;
-  if (ref.includes("lekbie.no")) return true;
-  return false;
-}
-
 export default function Home() {
   const pathname = usePathname();
   const isOnline = useOnlineStatus();
@@ -234,13 +210,12 @@ export default function Home() {
   const [bottomOverlayPx, setBottomOverlayPx] = useState(0);
   const [showTech, setShowTech] = useState(false);
   const [lastTech, setLastTech] = useState<string | null>(null);
-  const [isAppNudgeHidden, setIsAppNudgeHidden] = useState(false);
-  const [isAppNudgeExpanded, setIsAppNudgeExpanded] = useState(false);
+  const cameraInputRef = useRef<HTMLInputElement | null>(null);
+  const cameraLoopTimerRef = useRef<number | null>(null);
 
   const appVersion = useMemo(() => getAppVersion(), []);
   const basePath = process.env.NEXT_PUBLIC_BASE_PATH ?? "";
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL ?? "";
-  const isAdminEnabled = process.env.NEXT_PUBLIC_ENABLE_ADMIN === "true";
   const sourceParam = useMemo(() => {
     if (typeof window === "undefined") return null;
     const params = new URLSearchParams(window.location.search);
@@ -262,12 +237,10 @@ export default function Home() {
     () => isLikelyFromBiensVokter(returnUrl, sourceParam),
     [returnUrl, sourceParam],
   );
-
-  const showAppNudge = useMemo(() => {
-    if (isAppNudgeHidden) return false;
+  const canAutoReopenCamera = useMemo(() => {
     if (typeof window === "undefined") return false;
-    return shouldShowBvAppHintNow() || isFromBiensVokter;
-  }, [isAppNudgeHidden, isFromBiensVokter]);
+    return MOBILE_CAMERA_LOOP_RE.test(window.navigator.userAgent ?? "");
+  }, []);
 
   const onBack = () => {
     if (returnMeta.url) return;
@@ -275,13 +248,6 @@ export default function Home() {
       window.history.back();
       return;
     }
-    const pasted = window.prompt("Lim inn lenke tilbake (https://...)", "");
-    const next = normalizeReturnUrl(pasted);
-    if (!next) return;
-    try {
-      localStorage.setItem("lek_varroascan_return_url", next);
-    } catch {}
-    setReturnMeta({ url: next, label: "Tilbake" });
   };
 
   useEffect(() => {
@@ -375,13 +341,31 @@ export default function Home() {
     };
   }, []);
 
-  const onPickImages = (files: FileList | null) => {
+  useEffect(() => {
+    return () => {
+      if (cameraLoopTimerRef.current != null) {
+        window.clearTimeout(cameraLoopTimerRef.current);
+      }
+    };
+  }, []);
+
+  const reopenCamera = () => {
+    if (!canAutoReopenCamera) return;
+    if (cameraLoopTimerRef.current != null) {
+      window.clearTimeout(cameraLoopTimerRef.current);
+    }
+    cameraLoopTimerRef.current = window.setTimeout(() => {
+      cameraInputRef.current?.click();
+    }, 120);
+  };
+
+  const onPickImages = (
+    files: FileList | null,
+    options?: { reopenCamera?: boolean },
+  ) => {
     setError(null);
     if (!files || files.length === 0) return;
-
-    const currentCount = images.length;
-    const remaining = Math.max(0, MAX_IMAGES_PER_SUBMISSION - currentCount);
-    const picked = Array.from(files).slice(0, remaining);
+    const picked = Array.from(files);
 
     const tooLarge = picked.find(
       (f) => f.size > MAX_FILE_SIZE_MB * 1024 * 1024,
@@ -397,8 +381,14 @@ export default function Home() {
       id: crypto.randomUUID(),
       file,
       previewUrl: URL.createObjectURL(file),
+      note: "",
+      noteOpen: false,
     }));
     setImages((prev) => [...prev, ...next]);
+
+    if (options?.reopenCamera && picked.length > 0) {
+      reopenCamera();
+    }
   };
 
   const removeImage = (id: string) => {
@@ -407,6 +397,20 @@ export default function Home() {
       if (img) URL.revokeObjectURL(img.previewUrl);
       return prev.filter((p) => p.id !== id);
     });
+  };
+
+  const updateImageNote = (id: string, value: string) => {
+    setImages((prev) =>
+      prev.map((img) => (img.id === id ? { ...img, note: value } : img)),
+    );
+  };
+
+  const toggleImageNote = (id: string) => {
+    setImages((prev) =>
+      prev.map((img) =>
+        img.id === id ? { ...img, noteOpen: !img.noteOpen } : img,
+      ),
+    );
   };
 
   const resetForm = () => {
@@ -432,7 +436,7 @@ export default function Home() {
     }
 
     if (images.length === 0) {
-      setError("Legg til minst ett bilde.");
+      setError("Ta minst ett bilde.");
       return;
     }
 
@@ -480,28 +484,33 @@ export default function Home() {
           : null;
 
       step = "Oppretter innsending";
-      const insertRes = await supabase
-        .from("varroa_submissions")
-        .insert({
-          id: submissionId,
-          image_url: imageUrl,
-          beekeeper_name: userName,
-          apiary_name: null,
-          comment: noteValue,
-          mite_count_manual: null,
-          reviewed_by: null,
-          review_status: "pending",
-          user_id: userId,
-          user_name: userName,
-          type: submissionType,
-          images: uploadedPaths,
-          note: noteValue,
-          source: sourceParam ?? "web",
-          app_version: appVersion,
-          device_info: getDeviceInfo(),
-          route: pathname,
-          status: "NY",
-        });
+      const insertPayload: Record<string, unknown> = {
+        id: submissionId,
+        image_url: imageUrl,
+        beekeeper_name: userName,
+        apiary_name: null,
+        comment: noteValue,
+        mite_count_manual: null,
+        reviewed_by: null,
+        review_status: "pending",
+        user_id: userId,
+        user_name: userName,
+        type: submissionType,
+        images: uploadedPaths,
+        image_notes: images.map((img) => (img.note.trim() ? img.note.trim() : null)),
+        note: noteValue,
+        source: sourceParam ?? "web",
+        app_version: appVersion,
+        device_info: getDeviceInfo(),
+        route: pathname,
+        status: "NY",
+      };
+
+      let insertRes = await supabase.from("varroa_submissions").insert(insertPayload);
+      if (insertRes.error && isMissingImageNotesColumnError(insertRes.error)) {
+        delete insertPayload.image_notes;
+        insertRes = await supabase.from("varroa_submissions").insert(insertPayload);
+      }
       if (insertRes.error) throw insertRes.error;
 
       setLastSubmission({
@@ -598,9 +607,8 @@ export default function Home() {
               <a
                 href={`${basePath}/admin/`}
                 className="h-12 rounded-2xl border border-zinc-700 text-zinc-100 font-semibold flex items-center justify-center active:opacity-90"
-                style={{ display: isAdminEnabled ? undefined : "none" }}
               >
-                Admin
+                🎓 Logg inn i admin
               </a>
             </div>
           </div>
@@ -649,10 +657,9 @@ export default function Home() {
           </div>
           <a
             href={`${basePath}/admin/`}
-            className="text-sm font-semibold text-zinc-200 hover:text-zinc-50"
-            style={{ display: isAdminEnabled ? undefined : "none" }}
+            className="inline-flex h-10 items-center gap-2 rounded-xl border border-zinc-700 bg-zinc-900 px-3 text-sm font-semibold text-zinc-100 hover:bg-zinc-800 active:opacity-90"
           >
-            Admin
+            🎓 Admin
           </a>
         </div>
 
@@ -662,41 +669,6 @@ export default function Home() {
           </div>
         ) : null}
 
-        {showAppNudge ? (
-          <div className="mt-4 rounded-2xl border border-amber-300 bg-amber-400 px-4 py-2 text-sm text-zinc-950">
-            <div className="flex items-center justify-between gap-3">
-              <button
-                type="button"
-                onClick={() => setIsAppNudgeExpanded((v) => !v)}
-                className="min-w-0 text-left font-semibold underline-offset-4 hover:underline active:opacity-90"
-              >
-                Åpne som “app” på iPhone
-              </button>
-              <div className="flex items-center gap-2">
-                <button
-                  type="button"
-                  onClick={() => setIsAppNudgeExpanded((v) => !v)}
-                  className="h-8 rounded-2xl border border-amber-600 bg-amber-300 px-3 text-xs font-semibold text-zinc-950 active:opacity-90"
-                >
-                  {isAppNudgeExpanded ? "Lukk" : "Vis"}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setIsAppNudgeHidden(true)}
-                  className="h-8 rounded-2xl border border-amber-600 bg-amber-300 px-3 text-xs font-semibold text-zinc-950 active:opacity-90"
-                >
-                  Skjul
-                </button>
-              </div>
-            </div>
-            {isAppNudgeExpanded ? (
-              <div className="mt-2 text-xs">
-                Trykk Del (firkant med pil) → Legg til på hjem-skjerm. Åpne
-                deretter VarroaScan fra ikonet for “app”-modus.
-              </div>
-            ) : null}
-          </div>
-        ) : null}
       </header>
 
       <main className="mx-auto mt-6 w-full max-w-xl">
@@ -719,50 +691,89 @@ export default function Home() {
             <div>
               <div className="flex items-center justify-between">
                 <div className="text-sm font-semibold text-zinc-200">Bilder</div>
-                <div className="text-xs text-zinc-400">
-                  {images.length}/{MAX_IMAGES_PER_SUBMISSION}
-                </div>
+                <div className="text-xs text-zinc-400">{images.length} valgt</div>
               </div>
 
-              <div className="mt-2 grid grid-cols-2 gap-3">
-                {images.map((img) => (
+              <input
+                ref={cameraInputRef}
+                type="file"
+                accept="image/*"
+                capture="environment"
+                className="hidden"
+                onChange={(e) => {
+                  onPickImages(e.target.files, { reopenCamera: true });
+                  e.currentTarget.value = "";
+                }}
+              />
+
+              <button
+                type="button"
+                onClick={() => cameraInputRef.current?.click()}
+                className="mt-2 flex h-14 w-full items-center justify-center rounded-2xl bg-amber-400 px-4 text-base font-semibold text-zinc-950 active:opacity-90"
+              >
+                {"\uD83D\uDCF7"} Ta bilde
+              </button>
+
+              <div className="mt-3 space-y-3">
+                {images.map((img, index) => (
                   <div
                     key={img.id}
-                    className="relative overflow-hidden rounded-2xl border border-zinc-800 bg-zinc-950"
+                    className="rounded-2xl border border-zinc-800 bg-zinc-950 p-3"
                   >
-                    <img
-                      src={img.previewUrl}
-                      alt="Valgt bilde"
-                      className="h-40 w-full object-cover"
-                    />
-                    <button
-                      type="button"
-                      onClick={() => removeImage(img.id)}
-                      className="absolute right-2 top-2 h-9 w-9 rounded-full bg-black/60 text-white text-sm font-semibold active:opacity-80"
-                    >
-                      ×
-                    </button>
+                    <div className="flex items-start gap-3">
+                      <div className="overflow-hidden rounded-2xl border border-zinc-800 bg-zinc-900">
+                        <img
+                          src={img.previewUrl}
+                          alt={`Bilde ${index + 1}`}
+                          className="h-28 w-28 object-cover"
+                        />
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-start justify-between gap-3">
+                          <div>
+                            <div className="text-sm font-semibold text-zinc-100">
+                              Bilde {index + 1}
+                            </div>
+                            <div className="mt-1 text-xs text-zinc-500">
+                              {formatBytes(img.file.size)}
+                            </div>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => removeImage(img.id)}
+                            className="rounded-2xl border border-zinc-700 px-3 py-2 text-xs font-semibold text-zinc-200 active:opacity-90"
+                          >
+                            Fjern
+                          </button>
+                        </div>
+
+                        <div className="mt-3 flex flex-wrap gap-2">
+                          <button
+                            type="button"
+                            onClick={() => toggleImageNote(img.id)}
+                            className="rounded-2xl border border-zinc-700 px-3 py-2 text-xs font-semibold text-zinc-200 active:opacity-90"
+                          >
+                            {img.noteOpen || img.note ? "Skjul notat" : "Legg til notat"}
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+
+                    {img.noteOpen ? (
+                      <textarea
+                        value={img.note}
+                        onChange={(e) => updateImageNote(img.id, e.target.value)}
+                        rows={2}
+                        className="mt-3 w-full rounded-2xl border border-zinc-700 bg-zinc-900 px-4 py-3 text-sm text-zinc-50 placeholder:text-zinc-600 focus:outline-none focus:ring-2 focus:ring-amber-300"
+                        placeholder="Kort notat for dette bildet (valgfritt)"
+                      />
+                    ) : null}
                   </div>
                 ))}
-
-                {images.length < MAX_IMAGES_PER_SUBMISSION ? (
-                  <label className="h-40 rounded-2xl border border-dashed border-zinc-700 bg-zinc-950 flex items-center justify-center text-sm font-semibold text-zinc-200 active:opacity-90">
-                    <input
-                      type="file"
-                      accept="image/*"
-                      multiple
-                      capture="environment"
-                      className="hidden"
-                      onChange={(e) => onPickImages(e.target.files)}
-                    />
-                    + Legg til
-                  </label>
-                ) : null}
               </div>
 
               <div className="mt-2 text-xs text-zinc-500">
-                Maks {MAX_IMAGES_PER_SUBMISSION} bilder per innsending. Maks{" "}
-                {MAX_FILE_SIZE_MB} MB per bilde.
+                Ubegrenset antall bilder. Maks {MAX_FILE_SIZE_MB} MB per bilde.
               </div>
             </div>
 
@@ -799,12 +810,7 @@ export default function Home() {
                 <div>appVersion: {appVersion}</div>
                 <div>online: {String(isOnline)}</div>
                 <div>displayModeStandalone: {String(isStandaloneApp())}</div>
-                <div>
-                  bvHintEligible:{" "}
-                  {typeof window === "undefined"
-                    ? "false"
-                    : String(isBvHintEligibleFromSearch(window.location.search))}
-                </div>
+                <div>fromBiensVokter: {String(isFromBiensVokter)}</div>
                 <div>source: {sourceParam ?? "—"}</div>
                 <div>
                   supabaseUrl:{" "}

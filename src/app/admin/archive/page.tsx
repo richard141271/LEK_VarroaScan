@@ -7,35 +7,18 @@ import {
 } from "@/lib/adminNavigation";
 import { getSupabaseClient } from "@/lib/supabaseClient";
 import { useOnlineStatus } from "@/lib/useOnlineStatus";
-import { isVarroaAdmin } from "@/lib/varroaAdmin";
-
-type VarroaSubmission = {
-  id: string;
-  created_at: string;
-  user_name: string | null;
-  type: string;
-  note: string | null;
-  images: string[];
-  status: "NY" | "UNDER_ARBEID" | "ARKIVERT";
-  ai_status?: "PENDING" | "RUNNING" | "DONE" | "FAILED" | null;
-  ai_count?: number | null;
-};
-
-function isMissingAiColumnsError(value: unknown) {
-  if (!value || typeof value !== "object") return false;
-  if (!("message" in value)) return false;
-  const message = String((value as { message?: unknown }).message ?? "");
-  return (
-    message.includes("does not exist") &&
-    (message.includes("ai_status") || message.includes("ai_count"))
-  );
-}
-
-function formatDateTime(value: string) {
-  const dt = new Date(value);
-  if (Number.isNaN(dt.getTime())) return value;
-  return dt.toLocaleString("no-NO");
-}
+import { getVarroaAccess, type VarroaAccess } from "@/lib/varroaRoles";
+import {
+  formatDateTime,
+  getDisplayNameFromEmail,
+  getRoleLabel,
+  getStatusUi,
+  getSubmissionSelect,
+  getTypeLabel,
+  getWorkflowMigrationMessage,
+  isMissingWorkflowSchemaError,
+  type VarroaSubmissionRecord,
+} from "@/lib/varroaWorkflow";
 
 export default function AdminArchivePage() {
   const isOnline = useOnlineStatus();
@@ -47,14 +30,25 @@ export default function AdminArchivePage() {
   }, []);
   const returnInfo = useMemo(() => {
     if (typeof window === "undefined") {
-      return { href: null as string | null, label: "← Tilbake" };
+      return { href: null as string | null, label: null as string | null };
     }
-    return getAdminReturnInfo(window.location.search);
+    const raw = getAdminReturnInfo(window.location.search);
+    if (raw.href) return raw;
+    return { href: null as string | null, label: null as string | null };
   }, []);
+  const adminLoginHref = useMemo(() => {
+    if (typeof window === "undefined") return `${basePath}/admin/`;
+    const params = new URLSearchParams(window.location.search);
+    const currentPath = window.location.pathname.startsWith(basePath)
+      ? window.location.pathname.slice(basePath.length) || "/"
+      : window.location.pathname;
+    params.set("next", `${currentPath}${window.location.search}`);
+    return `${basePath}/admin/?${params.toString()}`;
+  }, [basePath]);
 
   const [isAuthed, setIsAuthed] = useState(false);
-  const [isAdmin, setIsAdmin] = useState(false);
-  const [items, setItems] = useState<VarroaSubmission[]>([]);
+  const [access, setAccess] = useState<VarroaAccess | null>(null);
+  const [items, setItems] = useState<VarroaSubmissionRecord[]>([]);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
 
@@ -70,46 +64,38 @@ export default function AdminArchivePage() {
       const session = sessionData.session;
       setIsAuthed(Boolean(session));
       if (!session) {
-        setIsAdmin(false);
+        setAccess(null);
         setItems([]);
-        setLoadError("Logg inn som admin for å se arkivet.");
+        window.location.replace(adminLoginHref);
         return;
       }
 
-      const admin = await isVarroaAdmin(supabase, session);
-      setIsAdmin(admin);
-      if (!admin) {
+      const nextAccess = await getVarroaAccess(supabase, session);
+      setAccess(nextAccess);
+      if (!nextAccess.role || !nextAccess.canControl) {
         setItems([]);
-        setLoadError("Kun admin kan se arkivet.");
+        setLoadError("Kun fagansvarlig eller superadmin kan se arkivet.");
         return;
       }
 
-      const selectWithAi =
-        "id,created_at,user_name,type,note,images,status,ai_status,ai_count";
-      const selectWithoutAi = "id,created_at,user_name,type,note,images,status";
-
-      const resWithAi = await supabase
+      const res = await supabase
         .from("varroa_submissions")
-        .select(selectWithAi)
-        .eq("status", "ARKIVERT")
-        .order("created_at", { ascending: false })
-        .limit(200);
+        .select(getSubmissionSelect())
+        .in("status", ["GODKJENT", "KLAR_FOR_TRENING", "ARKIVERT"])
+        .order("updated_at", { ascending: false })
+        .limit(300);
 
-      if (resWithAi.error && isMissingAiColumnsError(resWithAi.error)) {
-        const resWithoutAi = await supabase
-          .from("varroa_submissions")
-          .select(selectWithoutAi)
-          .eq("status", "ARKIVERT")
-          .order("created_at", { ascending: false })
-          .limit(200);
-
-        if (resWithoutAi.error) throw resWithoutAi.error;
-        setItems((resWithoutAi.data ?? []) as VarroaSubmission[]);
+      if (res.error) {
+        if (isMissingWorkflowSchemaError(res.error)) {
+          setLoadError(getWorkflowMigrationMessage());
+          setItems([]);
+        } else {
+          throw res.error;
+        }
         return;
       }
 
-      if (resWithAi.error) throw resWithAi.error;
-      setItems((resWithAi.data ?? []) as VarroaSubmission[]);
+      setItems((res.data ?? []) as unknown as VarroaSubmissionRecord[]);
     } catch (e) {
       const message =
         typeof e === "object" && e && "message" in e
@@ -119,7 +105,7 @@ export default function AdminArchivePage() {
     } finally {
       setIsLoading(false);
     }
-  }, [supabase]);
+  }, [adminLoginHref, supabase]);
 
   useEffect(() => {
     const t = window.setTimeout(() => {
@@ -131,12 +117,20 @@ export default function AdminArchivePage() {
   return (
     <div className="min-h-dvh px-4 pb-10 pt-8">
       <header className="mx-auto w-full max-w-3xl">
-        <div className="flex items-center justify-between">
-          <div>
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="flex-shrink-0">
             <div className="text-lg font-semibold">Admin</div>
             <div className="text-xs text-zinc-400">Arkiv</div>
           </div>
-          <div className="flex items-center gap-4">
+          <div className="hidden flex-1 text-center md:block">
+            {access?.role && access.email ? (
+              <div className="text-sm font-medium text-amber-200/90">
+                👋 Velkommen {getDisplayNameFromEmail(access.email)} ({getRoleLabel(access.role)}), ha
+                en fin dag!
+              </div>
+            ) : null}
+          </div>
+          <div className="flex flex-shrink-0 items-center gap-4">
             {returnInfo.href ? (
               <a
                 href={returnInfo.href}
@@ -144,7 +138,14 @@ export default function AdminArchivePage() {
               >
                 {returnInfo.label}
               </a>
-            ) : null}
+            ) : (
+              <a
+                href={`${basePath}/`}
+                className="text-sm font-semibold text-zinc-300 hover:text-zinc-50"
+              >
+                ← Til forsiden
+              </a>
+            )}
             <a
               href={appendAdminContext(`${basePath}/admin/innsendinger/`, adminContextSearch)}
               className="text-sm font-semibold text-zinc-200 hover:text-zinc-50"
@@ -153,6 +154,13 @@ export default function AdminArchivePage() {
             </a>
           </div>
         </div>
+        {access?.role && access.email ? (
+          <div className="mt-2 text-center md:hidden">
+            <div className="text-xs font-medium text-amber-200/90">
+              👋 Velkommen {getDisplayNameFromEmail(access.email)} ({getRoleLabel(access.role)})
+            </div>
+          </div>
+        ) : null}
 
         {!isOnline ? (
           <div className="mt-4 rounded-2xl border border-red-900/60 bg-red-950/40 px-4 py-3 text-sm text-red-200">
@@ -162,9 +170,9 @@ export default function AdminArchivePage() {
       </header>
 
       <main className="mx-auto mt-6 w-full max-w-3xl space-y-4">
-        {!isAuthed && loadError === "Logg inn som admin for å se arkivet." ? (
+        {!isAuthed && loadError === "Logg inn for å se arkivet." ? (
           <div className="rounded-3xl bg-zinc-900 border border-zinc-800 p-5">
-            <div className="text-base font-semibold">Admin kreves</div>
+            <div className="text-base font-semibold">Innlogging kreves</div>
             <div className="mt-1 text-sm text-zinc-400">
               Logg inn via admin for å åpne arkivet.
             </div>
@@ -177,19 +185,26 @@ export default function AdminArchivePage() {
           </div>
         ) : null}
 
-        {isAuthed && !isAdmin && loadError === "Kun admin kan se arkivet." ? (
+        {isAuthed &&
+        !access?.canControl &&
+        loadError === "Kun fagansvarlig eller superadmin kan se arkivet." ? (
           <div className="rounded-3xl bg-zinc-900 border border-zinc-800 p-5">
             <div className="text-base font-semibold">Ingen tilgang</div>
             <div className="mt-1 text-sm text-zinc-400">
-              Du er innlogget, men er ikke registrert som admin i Supabase.
+              Arkivet er kun for kontroll og treningsklar klargjøring.
             </div>
           </div>
         ) : null}
 
-        {isAdmin ? (
+        {access?.canControl ? (
           <div className="rounded-3xl bg-zinc-900 border border-zinc-800 p-5">
             <div className="flex items-center justify-between">
-              <div className="text-base font-semibold">Arkiv</div>
+              <div>
+                <div className="text-base font-semibold">Godkjent / arkiv</div>
+                <div className="text-sm text-zinc-400">
+                  Saker som er godkjent, klare for trening eller arkivert.
+                </div>
+              </div>
               <button
                 type="button"
                 onClick={reload}
@@ -217,7 +232,7 @@ export default function AdminArchivePage() {
                 <a
                   key={s.id}
                   href={appendAdminContext(
-                    `${basePath}/admin/submission/?id=${encodeURIComponent(s.id)}`,
+                    `${basePath}/admin/innsendinger/innsending/?id=${encodeURIComponent(s.id)}`,
                     adminContextSearch,
                   )}
                   className="block py-4 hover:bg-zinc-950/60 rounded-2xl px-3 -mx-3"
@@ -225,19 +240,17 @@ export default function AdminArchivePage() {
                   <div className="flex items-start justify-between gap-4">
                     <div className="min-w-0">
                       <div className="text-sm font-semibold text-zinc-100 truncate">
-                        {s.type === "BUNNBRETT_FOTO"
-                          ? "Bunnbrett foto"
-                          : s.type === "KONTROLLFOTO"
-                            ? "Kontrollfoto"
-                            : s.type}
+                        {getTypeLabel(s.type)}
                       </div>
                       <div className="mt-1 text-xs text-zinc-400">
-                        {formatDateTime(s.created_at)}
+                        {formatDateTime(s.updated_at ?? s.created_at)}
                         {s.user_name ? ` • ${s.user_name}` : ""}
                         {s.images?.length ? ` • ${s.images.length} bilder` : ""}
                         {s.status ? ` • ${s.status}` : ""}
-                        {s.ai_status ? ` • AI ${s.ai_status}` : ""}
-                        {typeof s.ai_count === "number" ? ` • ${s.ai_count} midd` : ""}
+                        {s.training_ready ? " • Treningsklar" : ""}
+                        {typeof s.manual_mite_count === "number"
+                          ? ` • ${s.manual_mite_count} midd`
+                          : ""}
                       </div>
                       {s.note ? (
                         <div className="mt-2 text-sm text-zinc-300">
@@ -245,8 +258,18 @@ export default function AdminArchivePage() {
                         </div>
                       ) : null}
                     </div>
-                    <div className="text-sm font-semibold text-zinc-200">
-                      Åpne →
+                    <div className="flex flex-col items-end gap-2">
+                      <div
+                        className={[
+                          "rounded-full border px-3 py-1 text-[11px] font-semibold",
+                          getStatusUi(s.status).chipClass,
+                        ].join(" ")}
+                      >
+                        {getStatusUi(s.status).label}
+                      </div>
+                      <div className="text-sm font-semibold text-zinc-200">
+                        Åpne →
+                      </div>
                     </div>
                   </div>
                 </a>

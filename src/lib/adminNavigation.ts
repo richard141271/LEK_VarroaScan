@@ -54,12 +54,19 @@ export function getAdminReturnInfo(search: string) {
       params.get("back"),
   );
 
+  if (returnTo) {
+    return {
+      href: returnTo,
+      label:
+        source === "biens-vokter-admin" || source === "biens-vokter"
+          ? "← Tilbake til LEK-Biens Vokter"
+          : "← Tilbake",
+    };
+  }
+
   return {
-    href: returnTo,
-    label:
-      source === "biens-vokter-admin" || source === "biens-vokter"
-        ? "← Tilbake til LEK-Biens Vokter"
-        : "← Tilbake",
+    href: null as string | null,
+    label: null as string | null,
   };
 }
 
