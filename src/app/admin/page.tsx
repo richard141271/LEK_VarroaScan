@@ -54,6 +54,8 @@ export default function AdminInboxPage() {
   const supabase = useMemo(() => getSupabaseClient(), []);
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
+  const [authMode, setAuthMode] = useState<"login" | "register" | "forgot">("login");
   const [authInfo, setAuthInfo] = useState<string | null>(null);
   const [authError, setAuthError] = useState<string | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -180,11 +182,119 @@ export default function AdminInboxPage() {
     setIsLoading(false);
 
     if (res.error) {
-      setAuthError(res.error.message);
+      if (res.error.message?.toLowerCase()?.includes("invalid") || res.error.message?.toLowerCase()?.includes("password")) {
+        setAuthError(`${res.error.message} — hvis du ikke har bruker enda, bytt til "Registrer deg" øverst.`);
+      } else {
+        setAuthError(res.error.message);
+      }
       return;
     }
 
     await reload();
+  };
+
+  const registerWithPassword = async () => {
+    setAuthError(null);
+    setAuthInfo(null);
+
+    if (!isOnline) {
+      setAuthError("Du er offline. Registrering krever nett.");
+      return;
+    }
+
+    if (!supabase) {
+      setAuthError("Mangler Supabase-konfig (NEXT_PUBLIC_SUPABASE_*).");
+      return;
+    }
+
+    const trimmedEmail = email.trim().toLowerCase();
+    if (!trimmedEmail) {
+      setAuthError("Skriv inn e-post.");
+      return;
+    }
+
+    if (!password || password.length < 6) {
+      setAuthError("Passordet må være minst 6 tegn.");
+      return;
+    }
+
+    if (password !== confirmPassword) {
+      setAuthError("Passordene er ikke like i de to feltene.");
+      return;
+    }
+
+    setIsLoading(true);
+    const res = await supabase.auth.signUp({
+      email: trimmedEmail,
+      password,
+      options: {
+        emailRedirectTo: `${window.location.origin}${basePath}/admin/`,
+        data: {},
+      },
+    });
+    setIsLoading(false);
+
+    if (res.error) {
+      const msg = res.error.message ?? "";
+      if (msg.toLowerCase().includes("already registered") || msg.toLowerCase().includes("email")) {
+        setAuthError(`${msg} — prøv i stedet "Logg inn" øverst, eller "Glemt passord?".`);
+      } else if (msg.toLowerCase().includes("email rate")) {
+        setAuthError("E-postrate-begrensning: vent noen minutter og prøv igjen, eller logg inn med eksisterende passord.");
+      } else {
+        setAuthError(msg);
+      }
+      return;
+    }
+
+    const newSession = res.data.session;
+    if (newSession) {
+      setAuthInfo("Velkommen! Bruker er opprettet og du er logget inn. Laster arbeidsflaten…");
+      await reload();
+      return;
+    }
+
+    setAuthInfo("Bruker opprettet! Sjekk e-posten din for en bekreftelseslenke (hvis aktivert), så logg inn.");
+  };
+
+  const resetPassword = async () => {
+    setAuthError(null);
+    setAuthInfo(null);
+
+    if (!isOnline) {
+      setAuthError("Du er offline. Tilbakestilling krever nett.");
+      return;
+    }
+
+    if (!supabase) {
+      setAuthError("Mangler Supabase-konfig.");
+      return;
+    }
+
+    const trimmedEmail = email.trim().toLowerCase();
+    if (!trimmedEmail) {
+      setAuthError("Skriv inn e-posten din.");
+      return;
+    }
+
+    setIsLoading(true);
+    const redirectTo = new URL(`${window.location.origin}${basePath}/`);
+    redirectTo.searchParams.set("authRedirect", requestedNextPath ?? "/admin/");
+
+    const res = await supabase.auth.resetPasswordForEmail(trimmedEmail, {
+      redirectTo: redirectTo.toString(),
+    });
+    setIsLoading(false);
+
+    if (res.error) {
+      if (res.error.message.toLowerCase().includes("rate limit")) {
+        setAuthError("E-postrate-begrensning. Vent noen minutter, eller bruk magic link knappen under.");
+      } else {
+        setAuthError(res.error.message);
+      }
+      return;
+    }
+
+    setAuthInfo("Hvis bruker finnes er det sendt en lenke på e-post for å tilbakestille passordet ditt. Sjekk søppelpost!");
   };
 
   const sendLoginLink = async () => {
@@ -210,19 +320,26 @@ export default function AdminInboxPage() {
     const authRedirect = new URL(`${window.location.origin}${basePath}/`);
     authRedirect.searchParams.set("authRedirect", requestedNextPath ?? "/admin/");
 
+    setIsLoading(true);
     const res = await supabase.auth.signInWithOtp({
       email: trimmed,
       options: {
         emailRedirectTo: authRedirect.toString(),
       },
     });
+    setIsLoading(false);
 
     if (res.error) {
-      setAuthError(res.error.message);
+      const msg = res.error.message ?? "";
+      if (msg.toLowerCase().includes("rate limit")) {
+        setAuthError("E-postrate-begrensning. Vent noen minutter, eller registrer deg med passord i stedet.");
+      } else {
+        setAuthError(msg);
+      }
       return;
     }
 
-    setAuthInfo("Sjekk e-posten din for en innloggingslenke.");
+    setAuthInfo("Sjekk e-posten din (og søppelpost) for en innloggingslenke.");
   };
 
   const signOut = async () => {
@@ -421,11 +538,61 @@ export default function AdminInboxPage() {
       <main className="mx-auto mt-6 w-full max-w-6xl space-y-4">
         {!isAuthed ? (
           <div className="rounded-3xl border border-zinc-800 bg-zinc-900 p-6">
-            <div className="text-2xl font-semibold text-zinc-50">
-              Logg inn
-            </div>
-            <div className="mt-2 text-sm text-zinc-400">
-              Logg inn for å åpne kø, arbeidsflate og kontrollflyt.
+            <div className="flex flex-wrap items-end justify-between gap-4">
+              <div>
+                <div className="text-2xl font-semibold text-zinc-50">
+                  {authMode === "register"
+                    ? "Registrer deg"
+                    : authMode === "forgot"
+                    ? "Glemt passord"
+                    : "Logg inn"}
+                </div>
+                <div className="mt-2 text-sm text-zinc-400">
+                  {authMode === "register"
+                    ? "Lag deg en bruker med skole-e-post og eget passord. Får du automatisk STUDENT-tilgang."
+                    : authMode === "forgot"
+                    ? "Skriv inn e-posten din for å få en lenke for å sette nytt passord."
+                    : "Logg inn for å åpne kø, arbeidsflate og kontrollflyt."}
+                </div>
+              </div>
+              <div className="flex flex-wrap gap-2 rounded-2xl border border-zinc-800 bg-zinc-950 p-1">
+                <button
+                  type="button"
+                  onClick={() => { setAuthMode("login"); setAuthError(null); setAuthInfo(null); }}
+                  className={[
+                    "h-10 rounded-xl px-4 text-sm font-semibold transition",
+                    authMode === "login"
+                      ? "bg-amber-400 text-zinc-950"
+                      : "text-zinc-300 hover:text-zinc-100",
+                  ].join(" ")}
+                >
+                  Logg inn
+                </button>
+                <button
+                  type="button"
+                  onClick={() => { setAuthMode("register"); setAuthError(null); setAuthInfo(null); setConfirmPassword(""); }}
+                  className={[
+                    "h-10 rounded-xl px-4 text-sm font-semibold transition",
+                    authMode === "register"
+                      ? "bg-amber-400 text-zinc-950"
+                      : "text-zinc-300 hover:text-zinc-100",
+                  ].join(" ")}
+                >
+                  Registrer deg
+                </button>
+                <button
+                  type="button"
+                  onClick={() => { setAuthMode("forgot"); setAuthError(null); setAuthInfo(null); setPassword(""); setConfirmPassword(""); }}
+                  className={[
+                    "h-10 rounded-xl px-4 text-sm font-semibold transition",
+                    authMode === "forgot"
+                      ? "bg-amber-400 text-zinc-950"
+                      : "text-zinc-300 hover:text-zinc-100",
+                  ].join(" ")}
+                >
+                  Glemt passord?
+                </button>
+              </div>
             </div>
 
             <div className="mt-5 rounded-2xl border border-indigo-900/60 bg-indigo-950/30 px-4 py-4 text-sm text-indigo-200">
@@ -433,19 +600,23 @@ export default function AdminInboxPage() {
                 🎓 HIØ-student / fagansvarlig?
               </div>
               <div className="mt-2 text-indigo-100">
-                Skriv inn din <b>skole-e-post</b> nedenfor og trykk{" "}
-                <b>📧 Send e-postlenke</b>. Du får en sikker
-                innloggingslenke på e-post — ingen passord trengs.
-                Tilgangen gjelder automatisk til{" "}
-                <b>31. desember 2026</b>.
+                {authMode === "register" ? (
+                  <>
+                    <b>Registrer deg med skole-e-post + eget passord</b> under. Får du automatisk rolle som STUDENT (eller FAGANSVARLIG hvis e-posten din er hvitelistet).
+                  </>
+                ) : (
+                  <>
+                    Velg <b>Registrer deg</b> øverst hvis du ikke har bruker enda.
+                    Skole-e-post: <b>@hiof.no, @stud.hiof.no, @hit.no, @stud.hit.no</b> → automatisk STUDENT-tilgang
+                    til <b>31. desember 2026</b>. Annen e-post: fagansvarlig legger deg til manuelt.
+                  </>
+                )}
               </div>
-              <div className="mt-2 text-xs text-indigo-300">
-                Gyldige skole-e-poster: <code className="rounded bg-indigo-900/50 px-1.5 py-0.5">@hiof.no</code>,{" "}
-                <code className="rounded bg-indigo-900/50 px-1.5 py-0.5">@stud.hiof.no</code>,{" "}
-                <code className="rounded bg-indigo-900/50 px-1.5 py-0.5">@hit.no</code>,{" "}
-                <code className="rounded bg-indigo-900/50 px-1.5 py-0.5">@stud.hit.no</code>.
-                Bruker du annen e-post? Kontakt fagansvarlig, så legger vi deg til manuelt.
-              </div>
+              {authMode === "register" && (
+                <div className="mt-2 text-xs text-indigo-300">
+                  Etter registrering logges du rett inn. Vær inne i arbeidsflaten umiddelbart! Ingen e-postbekreftelse trengs (utenom du skrudd på manuelt i Supabase).
+                </div>
+              )}
             </div>
 
             <div className="mt-6 grid grid-cols-1 gap-4">
@@ -457,57 +628,129 @@ export default function AdminInboxPage() {
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
                   type="email"
-                  placeholder="fornavn.etternavn@stud.hiof.no"
+                  placeholder={
+                    authMode === "forgot"
+                      ? "e-posten din registrert tidligere"
+                      : "fornavn.etternavn@stud.hiof.no"
+                  }
                   onKeyDown={(e) => {
-                    if (e.key === "Enter") {
+                    if (e.key !== "Enter") return;
+                    if (authMode === "login") {
                       if (password) void signInWithPassword();
-                      else void sendLoginLink();
+                    } else if (authMode === "register") {
+                      void registerWithPassword();
+                    } else {
+                      void resetPassword();
                     }
                   }}
                   className="mt-1 h-14 w-full rounded-2xl border border-zinc-700 bg-zinc-950 px-4 text-base text-zinc-50 placeholder:text-zinc-600 focus:outline-none focus:ring-2 focus:ring-amber-300"
                 />
               </div>
-              <div>
-                <label className="text-xs font-semibold text-zinc-300">
-                  Passord (kun for fagansvarlige / superadmin)
+
+              {authMode !== "forgot" ? (
+                <div>
+                  <label className="text-xs font-semibold text-zinc-300">
+                  Passord
                 </label>
                 <input
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
                   type="password"
-                  placeholder="••••••••"
+                  placeholder={authMode === "register" ? "Minst 6 tegn" : "••••••••"}
                   onKeyDown={(e) => {
-                    if (e.key === "Enter") void signInWithPassword();
+                    if (e.key === "Enter") {
+                      if (authMode === "login") void signInWithPassword();
+                      if (authMode === "register") void registerWithPassword();
+                    }
                   }}
                   className="mt-1 h-14 w-full rounded-2xl border border-zinc-700 bg-zinc-950 px-4 text-base text-zinc-50 placeholder:text-zinc-600 focus:outline-none focus:ring-2 focus:ring-amber-300"
                 />
               </div>
+              ) : null}
+
+              {authMode === "register" ? (
+                <div>
+                  <label className="text-xs font-semibold text-zinc-300">
+                    Gjenta passord
+                  </label>
+                  <input
+                    value={confirmPassword}
+                    onChange={(e) => setConfirmPassword(e.target.value)}
+                    type="password"
+                    placeholder="Skriv samme passord igjen"
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") void registerWithPassword();
+                    }}
+                    className="mt-1 h-14 w-full rounded-2xl border border-zinc-700 bg-zinc-950 px-4 text-base text-zinc-50 placeholder:text-zinc-600 focus:outline-none focus:ring-2 focus:ring-amber-300"
+                  />
+                </div>
+              ) : null}
             </div>
 
             <div className="mt-6 grid grid-cols-1 gap-3">
-              <button
-                type="button"
-                onClick={sendLoginLink}
-                className="h-14 rounded-2xl bg-amber-400 text-base font-semibold text-zinc-950 active:opacity-90 disabled:opacity-60 hover:bg-amber-300"
-                disabled={!isOnline || isLoading}
-              >
-                📧 Send e-postlenke (anbefalt for studenter)
-              </button>
-              <button
-                type="button"
-                onClick={signInWithPassword}
-                className="h-12 rounded-2xl border border-zinc-700 bg-zinc-950 text-sm font-semibold text-zinc-50 active:opacity-90 disabled:opacity-60 hover:bg-zinc-900"
-                disabled={!isOnline || isLoading}
-              >
-                Logg inn med passord (kun admin/fagansvarlig)
-              </button>
+              {authMode === "login" ? (
+                <>
+                  <button
+                    type="button"
+                    onClick={signInWithPassword}
+                    className="h-14 rounded-2xl bg-amber-400 text-base font-semibold text-zinc-950 active:opacity-90 disabled:opacity-60 hover:bg-amber-300"
+                    disabled={!isOnline || isLoading}
+                  >
+                    {isLoading ? "Logger inn…" : "🔐 Logg inn med passord"}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={sendLoginLink}
+                    className="h-12 rounded-2xl border border-zinc-700 bg-zinc-950 text-sm font-semibold text-zinc-50 active:opacity-90 disabled:opacity-60 hover:bg-zinc-900"
+                    disabled={!isOnline || isLoading}
+                  >
+                    📧 Send meg en innloggingslenke på e-post (alternativ)
+                  </button>
+                </>
+              ) : null}
+
+              {authMode === "register" ? (
+                <>
+                  <button
+                    type="button"
+                    onClick={registerWithPassword}
+                    className="h-14 rounded-2xl bg-amber-400 text-base font-semibold text-zinc-950 active:opacity-90 disabled:opacity-60 hover:bg-amber-300"
+                    disabled={!isOnline || isLoading}
+                  >
+                    {isLoading ? "Oppretter bruker…" : "✨ Opprett bruker og logg inn"}
+                  </button>
+                  <div className="rounded-2xl border border-zinc-800 bg-zinc-950 px-4 py-3 text-xs text-zinc-400">
+                    ✅ Registreringen lager deg rett inn umiddelbart, venter du <b>ikke</b> på e-postbekreftelse (med mindre det er skrudd på manuelt i Supabase).
+                  </div>
+                </>
+              ) : null}
+
+              {authMode === "forgot" ? (
+                <>
+                  <button
+                    type="button"
+                    onClick={resetPassword}
+                    className="h-14 rounded-2xl bg-amber-400 text-base font-semibold text-zinc-950 active:opacity-90 disabled:opacity-60 hover:bg-amber-300"
+                    disabled={!isOnline || isLoading}
+                  >
+                    {isLoading ? "Sender…" : "📧 Send lenke for nytt passord"}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setAuthMode("login")}
+                    className="h-10 text-sm font-semibold text-zinc-300 hover:text-zinc-100"
+                  >
+                    ← Tilbake til innlogging
+                  </button>
+                </>
+              ) : null}
             </div>
 
             {authInfo ? (
               <div className="mt-5 rounded-2xl border border-emerald-900/50 bg-emerald-950/40 px-4 py-3 text-sm text-emerald-200">
-                ✅ {authInfo}
-              </div>
-            ) : null}
+              ✅ {authInfo}
+            </div>
+          ) : null}
             {authError ? (
               <div className="mt-5 rounded-2xl border border-red-900/60 bg-red-950/40 px-4 py-3 text-sm text-red-200">
                 {authError}
