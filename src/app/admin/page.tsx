@@ -50,6 +50,56 @@ export default function AdminInboxPage() {
     const params = new URLSearchParams(window.location.search);
     return normalizeInternalRedirectPath(params.get("next"));
   }, []);
+  const preservedContextForLogin = useMemo(() => {
+    if (typeof window === "undefined") return "";
+    const parts = new URLSearchParams();
+    if (adminContextSearch) {
+      for (const [k, v] of new URLSearchParams(
+        adminContextSearch.replace(/^\?/, ""),
+      ).entries()) {
+        parts.set(k, v);
+      }
+    }
+    if (requestedNextPath) {
+      parts.set("next", requestedNextPath);
+    }
+    const s = parts.toString();
+    return s ? `?${s}` : "";
+  }, [adminContextSearch, requestedNextPath]);
+
+  const goAfterLogin = useCallback(() => {
+    const parts = new URLSearchParams(preservedContextForLogin.replace(/^\?/, ""));
+    const ctx = new URLSearchParams();
+    for (const [k, v] of parts.entries()) {
+      if (k === "next") continue;
+      ctx.set(k, v);
+    }
+    const ctxString = ctx.toString();
+    const nextRaw = parts.get("next");
+    const next = normalizeInternalRedirectPath(nextRaw);
+    const base = `${window.location.origin}${basePath}/admin/${
+      ctxString ? `?${ctxString}` : ""
+    }`;
+    if (next && next !== "/admin" && next !== "/admin/") {
+      const joiner = next.includes("?") ? "&" : "?";
+      const withCtx = ctxString ? `${next}${joiner}${ctxString}` : next;
+      window.location.replace(`${window.location.origin}${basePath}${withCtx}`);
+      return;
+    }
+    window.location.replace(base);
+  }, [basePath, preservedContextForLogin]);
+
+  const makeLoginRedirectTo = useCallback(
+    (preferredPath: string) => {
+      const params = new URLSearchParams(
+        preservedContextForLogin.replace(/^\?/, ""),
+      );
+      if (!params.has("next")) params.set("next", preferredPath);
+      const query = params.toString();
+      return query ? `/admin/?${query}` : "/admin/";
+    },
+    [preservedContextForLogin],
+  );
 
   const supabase = useMemo(() => getSupabaseClient(), []);
   const [email, setEmail] = useState("");
@@ -84,6 +134,13 @@ export default function AdminInboxPage() {
   const [users, setUsers] = useState<VarroaUserRecord[]>([]);
   const [usersError, setUsersError] = useState<string | null>(null);
   const [usersLoading, setUsersLoading] = useState(false);
+
+  const isFromBiensVokterAdmin = useMemo(() => {
+    if (typeof window === "undefined") return false;
+    const params = new URLSearchParams(window.location.search);
+    const src = (params.get("source") ?? "").toLowerCase();
+    return src.includes("biens") || src.includes("bien") || params.has("returnTo");
+  }, []);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -233,7 +290,7 @@ export default function AdminInboxPage() {
       return;
     }
 
-    await reload();
+    void goAfterLogin();
   };
 
   const registerWithPassword = async () => {
@@ -292,7 +349,7 @@ export default function AdminInboxPage() {
     const newSession = res.data.session;
     if (newSession) {
       setAuthInfo("Velkommen! Bruker er opprettet og du er logget inn. Laster arbeidsflaten…");
-      await reload();
+      setTimeout(() => void goAfterLogin(), 200);
       return;
     }
 
@@ -382,7 +439,7 @@ export default function AdminInboxPage() {
     }
 
     setAuthInfo("Passordet ditt er lagret! Nå er du logget inn og kan bruke passordet ditt neste gang. Laster arbeidsflaten…");
-    await reload();
+    setTimeout(() => void goAfterLogin(), 200);
   };
 
   const sendLoginLink = async () => {
@@ -693,6 +750,10 @@ export default function AdminInboxPage() {
                     ? "Registrer deg"
                     : authMode === "forgot"
                     ? "Glemt passord"
+                    : authMode === "recovery"
+                    ? "Sett nytt passord"
+                    : isFromBiensVokterAdmin
+                    ? "Logg inn for å åpne LEK-VarroaScan"
                     : "Logg inn"}
                 </div>
                 <div className="mt-2 text-sm text-zinc-400">
@@ -700,6 +761,10 @@ export default function AdminInboxPage() {
                     ? "Lag deg en bruker med skole-e-post og eget passord. Får du automatisk STUDENT-tilgang."
                     : authMode === "forgot"
                     ? "Skriv inn e-posten din for å få en lenke for å sette nytt passord."
+                    : authMode === "recovery"
+                    ? "Skriv inn et nytt passord du kan huske."
+                    : isFromBiensVokterAdmin
+                    ? "Du kommer fra LEK-Biens Vokter™️ sitt adminpanel. Autentiser deg under for å åpne arbeidsflaten i LEK-VarroaScan. Etter login holder det seg ca. 30 dager i denne nettleseren."
                     : "Logg inn for å åpne kø, arbeidsflate og kontrollflyt."}
                 </div>
               </div>
@@ -716,18 +781,20 @@ export default function AdminInboxPage() {
                 >
                   Logg inn
                 </button>
-                <button
-                  type="button"
-                  onClick={() => { setAuthMode("register"); setAuthError(null); setAuthInfo(null); setConfirmPassword(""); }}
-                  className={[
-                    "h-10 rounded-xl px-4 text-sm font-semibold transition",
-                    authMode === "register"
-                      ? "bg-amber-400 text-zinc-950"
-                      : "text-zinc-300 hover:text-zinc-100",
-                  ].join(" ")}
-                >
-                  Registrer deg
-                </button>
+                {!isFromBiensVokterAdmin ? (
+                  <button
+                    type="button"
+                    onClick={() => { setAuthMode("register"); setAuthError(null); setAuthInfo(null); setConfirmPassword(""); }}
+                    className={[
+                      "h-10 rounded-xl px-4 text-sm font-semibold transition",
+                      authMode === "register"
+                        ? "bg-amber-400 text-zinc-950"
+                        : "text-zinc-300 hover:text-zinc-100",
+                    ].join(" ")}
+                  >
+                    Registrer deg
+                  </button>
+                ) : null}
                 <button
                   type="button"
                   onClick={() => { setAuthMode("forgot"); setAuthError(null); setAuthInfo(null); setPassword(""); setConfirmPassword(""); }}
@@ -743,23 +810,68 @@ export default function AdminInboxPage() {
               </div>
             </div>
 
-            <div className="mt-5 rounded-2xl border border-indigo-900/60 bg-indigo-950/30 px-4 py-4 text-sm text-indigo-200">
-              <div className="font-semibold text-base">
-                🎓 HIØ-student / fagansvarlig?
+            {isFromBiensVokterAdmin && authMode === "login" ? (
+              <div className="mt-5 rounded-2xl border border-emerald-900/60 bg-emerald-950/30 px-4 py-4">
+                <div className="text-base font-semibold text-emerald-200">
+                  ✅ For deg som eier prosjektet
+                </div>
+                <div className="mt-2 text-sm text-emerald-100">
+                  Velg din e-post under for å fylle den ut automatisk, skriv passord, logg inn. Studenter bruker den direkte lenken til <code className="text-zinc-100">/admin</code>.
+                </div>
+                <div className="mt-3 flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setEmail("richard141271@gmail.com")}
+                    className="h-10 rounded-xl border border-emerald-700/60 bg-emerald-900/40 px-4 text-sm font-semibold text-emerald-100 hover:bg-emerald-900/60"
+                  >
+                    rikhard@gmail.com (SUPERADMIN)
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setEmail("richard141271@icloud.com")}
+                    className="h-10 rounded-xl border border-emerald-700/60 bg-emerald-900/40 px-4 text-sm font-semibold text-emerald-100 hover:bg-emerald-900/60"
+                  >
+                    rikhard@icloud.com (FAGANSVARLIG)
+                  </button>
+                </div>
               </div>
-              <div className="mt-2 text-indigo-100">
-                {authMode === "register" ? (
-                  <>
-                    <b>Registrer deg med skole-e-post + eget passord</b> under. Får du automatisk rolle som STUDENT (eller FAGANSVARLIG hvis e-posten din er hvitelistet).
-                  </>
-                ) : (
-                  <>
-                    Velg <b>Registrer deg</b> øverst hvis du ikke har bruker enda.
-                    Skole-e-post: <b>@hiof.no, @stud.hiof.no, @hit.no, @stud.hit.no</b> → automatisk STUDENT-tilgang
-                    til <b>31. desember 2026</b>. Annen e-post: fagansvarlig legger deg til manuelt.
-                  </>
-                )}
-              </div>
+            ) : null}
+
+            <div className={[
+              "mt-5 rounded-2xl border",
+              isFromBiensVokterAdmin ? "border-zinc-800 bg-zinc-950/60" : "border-indigo-900/60 bg-indigo-950/30",
+              "px-4 py-4 text-sm",
+              isFromBiensVokterAdmin ? "text-zinc-200" : "text-indigo-200"
+            ].join(" ")}>
+              {!isFromBiensVokterAdmin ? (
+                <>
+                  <div className="font-semibold text-base">
+                    🎓 HIØ-student / fagansvarlig?
+                  </div>
+                  <div className="mt-2 text-indigo-100">
+                    {authMode === "register" ? (
+                      <>
+                        <b>Registrer deg med skole-e-post + eget passord</b> under. Får du automatisk rolle som STUDENT (eller FAGANSVARLIG hvis e-posten din er hvitelistet).
+                      </>
+                    ) : (
+                      <>
+                        Velg <b>Registrer deg</b> øverst hvis du ikke har bruker enda.
+                        Skole-e-post: <b>@hiof.no, @stud.hiof.no, @hit.no, @stud.hit.no</b> → automatisk STUDENT-tilgang
+                        til <b>31. desember 2026</b>. Annen e-post: fagansvarlig legger deg til manuelt.
+                      </>
+                    )}
+                  </div>
+                </>
+              ) : (
+                <>
+                  <div className="font-semibold text-base">
+                    🧑‍🎓 Studenter?
+                  </div>
+                  <div className="mt-2 text-zinc-100">
+                    Ikke bruk denne innloggingslenken for studenter. Gi dem den direkte lenken til <code className="text-zinc-50">/admin</code> i LEK-VarroaScan, der kan de <b>registrere seg med skole-e-post + eget passord</b> selv.
+                  </div>
+                </>
+              )}
               {authMode === "register" && (
                 <div className="mt-2 text-xs text-indigo-300">
                   Etter registrering logges du rett inn. Vær inne i arbeidsflaten umiddelbart! Ingen e-postbekreftelse trengs (utenom du skrudd på manuelt i Supabase).
