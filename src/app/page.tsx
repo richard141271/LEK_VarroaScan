@@ -216,7 +216,6 @@ export default function Home() {
   const appVersion = useMemo(() => getAppVersion(), []);
   const basePath = process.env.NEXT_PUBLIC_BASE_PATH ?? "";
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL ?? "";
-  const isAdminEnabled = process.env.NEXT_PUBLIC_ENABLE_ADMIN === "true";
   const sourceParam = useMemo(() => {
     if (typeof window === "undefined") return null;
     const params = new URLSearchParams(window.location.search);
@@ -249,13 +248,6 @@ export default function Home() {
       window.history.back();
       return;
     }
-    const pasted = window.prompt("Lim inn lenke tilbake (https://...)", "");
-    const next = normalizeReturnUrl(pasted);
-    if (!next) return;
-    try {
-      localStorage.setItem("lek_varroascan_return_url", next);
-    } catch {}
-    setReturnMeta({ url: next, label: "Tilbake" });
   };
 
   useEffect(() => {
@@ -615,9 +607,8 @@ export default function Home() {
               <a
                 href={`${basePath}/admin/`}
                 className="h-12 rounded-2xl border border-zinc-700 text-zinc-100 font-semibold flex items-center justify-center active:opacity-90"
-                style={{ display: isAdminEnabled ? undefined : "none" }}
               >
-                Admin
+                🎓 Logg inn i admin
               </a>
             </div>
           </div>
@@ -666,10 +657,9 @@ export default function Home() {
           </div>
           <a
             href={`${basePath}/admin/`}
-            className="text-sm font-semibold text-zinc-200 hover:text-zinc-50"
-            style={{ display: isAdminEnabled ? undefined : "none" }}
+            className="inline-flex h-10 items-center gap-2 rounded-xl border border-zinc-700 bg-zinc-900 px-3 text-sm font-semibold text-zinc-100 hover:bg-zinc-800 active:opacity-90"
           >
-            Admin
+            🎓 Admin
           </a>
         </div>
 

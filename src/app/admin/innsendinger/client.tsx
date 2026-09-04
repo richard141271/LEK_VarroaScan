@@ -35,9 +35,11 @@ export function AdminQueueClient() {
   }, []);
   const returnInfo = useMemo(() => {
     if (typeof window === "undefined") {
-      return { href: null as string | null, label: "← Tilbake" };
+      return { href: null as string | null, label: null as string | null };
     }
-    return getAdminReturnInfo(window.location.search);
+    const raw = getAdminReturnInfo(window.location.search);
+    if (raw.href) return raw;
+    return { href: null as string | null, label: null as string | null };
   }, []);
   const adminLoginHref = useMemo(() => {
     if (typeof window === "undefined") return `${basePath}/admin/`;
@@ -292,7 +294,14 @@ export function AdminQueueClient() {
               >
                 {returnInfo.label}
               </a>
-            ) : null}
+            ) : (
+              <a
+                href={`${basePath}/`}
+                className="text-sm font-semibold text-zinc-300 hover:text-zinc-50"
+              >
+                ← Til forsiden
+              </a>
+            )}
             <a
               href={appendAdminContext(`${basePath}/admin/`, adminContextSearch)}
               className="text-sm font-semibold text-zinc-200 hover:text-zinc-50"

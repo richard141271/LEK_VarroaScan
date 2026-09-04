@@ -39,9 +39,11 @@ export default function AdminInboxPage() {
   }, []);
   const returnInfo = useMemo(() => {
     if (typeof window === "undefined") {
-      return { href: null as string | null, label: "← Tilbake" };
+      return { href: null as string | null, label: null as string | null };
     }
-    return getAdminReturnInfo(window.location.search);
+    const raw = getAdminReturnInfo(window.location.search);
+    if (raw.href) return raw;
+    return { href: null as string | null, label: null as string | null };
   }, []);
   const requestedNextPath = useMemo(() => {
     if (typeof window === "undefined") return null;
@@ -384,14 +386,29 @@ export default function AdminInboxPage() {
             <div className="text-lg font-semibold">LEK-VarroaScan</div>
             <div className="text-xs text-zinc-400">Produksjonsverktøy</div>
           </div>
-          {returnInfo.href ? (
+          <div className="flex items-center gap-3">
+            {returnInfo.href ? (
+              <a
+                href={returnInfo.href}
+                className="text-sm font-semibold text-zinc-200 hover:text-zinc-50"
+              >
+                {returnInfo.label}
+              </a>
+            ) : (
+              <a
+                href={`${basePath}/`}
+                className="text-sm font-semibold text-zinc-300 hover:text-zinc-50"
+              >
+                ← Til forsiden
+              </a>
+            )}
             <a
-              href={returnInfo.href}
-              className="text-sm font-semibold text-zinc-200 hover:text-zinc-50"
+              href={`${basePath}/admin/innsendinger/?view=mine`}
+              className="text-sm font-semibold text-zinc-300 hover:text-zinc-50"
             >
-              {returnInfo.label}
+              Arbeidskø
             </a>
-          ) : null}
+          </div>
         </div>
 
         {!isOnline ? (
