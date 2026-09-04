@@ -187,6 +187,13 @@ export default function AdminInboxPage() {
         return;
       }
 
+      if (requestedNextPath) {
+        // Allerede logget inn, og kom hit via en side som ba om login.
+        // Gå rett tilbake dit – ikke vis dashboardet i det hele tatt.
+        void goAfterLogin();
+        return;
+      }
+
       const [submissionsRes, availableRes] = await Promise.all([
         supabase
           .from("varroa_submissions")
@@ -226,7 +233,7 @@ export default function AdminInboxPage() {
     } finally {
       setIsLoading(false);
     }
-  }, [supabase]);
+  }, [goAfterLogin, requestedNextPath, supabase]);
 
   useEffect(() => {
     const t = window.setTimeout(() => {

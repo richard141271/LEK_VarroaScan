@@ -68,6 +68,16 @@ export function InnsendingPage({
   const [loadError, setLoadError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
 
+  const adminLoginHref = useMemo(() => {
+    if (typeof window === "undefined") return `${basePath}/admin/`;
+    const params = new URLSearchParams(window.location.search);
+    const currentPath = window.location.pathname.startsWith(basePath)
+      ? window.location.pathname.slice(basePath.length) || "/"
+      : window.location.pathname;
+    params.set("next", `${currentPath}${window.location.search}`);
+    return `${basePath}/admin/?${params.toString()}`;
+  }, [basePath]);
+
   const load = useCallback(async () => {
     setLoadError(null);
     setIsLoading(true);
@@ -101,18 +111,18 @@ export function InnsendingPage({
       setIsAuthed(Boolean(session));
       if (!session) {
         setIsAdmin(false);
-        setLoadError("Logg inn som admin for å se innsendingen.");
         setItem(null);
         setImages([]);
+        window.location.replace(adminLoginHref);
         return;
       }
 
       const admin = await isVarroaAdmin(supabase, session);
       setIsAdmin(admin);
       if (!admin) {
-        setLoadError("Kun admin kan se innsendingen.");
         setItem(null);
         setImages([]);
+        window.location.replace(adminLoginHref);
         return;
       }
 
