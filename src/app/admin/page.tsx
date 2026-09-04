@@ -470,7 +470,16 @@ export default function AdminInboxPage() {
     }
 
     const authRedirect = new URL(`${window.location.origin}${basePath}/`);
-    authRedirect.searchParams.set("authRedirect", requestedNextPath ?? "/admin/");
+    // Preserve ALL context for magic-link redirect tilbake hit, og next-path hvis satt
+    const context = new URLSearchParams(
+      preservedContextForLogin.replace(/^\?/, ""),
+    );
+    for (const [k, v] of context.entries()) {
+      if (k === "next") continue;
+      authRedirect.searchParams.set(k, v);
+    }
+    const np = context.get("next") ?? `${basePath}/admin/`;
+    authRedirect.searchParams.set("authRedirect", np);
 
     setIsLoading(true);
     const res = await supabase.auth.signInWithOtp({
@@ -841,6 +850,21 @@ export default function AdminInboxPage() {
                     rikhard@icloud.com (FAGANSVARLIG)
                   </button>
                 </div>
+              </div>
+            ) : null}
+
+            {isFromBiensVokterAdmin ? (
+              <div className="mt-4 rounded-2xl border border-amber-900/50 bg-amber-950/30 px-4 py-3 text-sm text-amber-100">
+                👉 Etter login kommer du tilbake til det du skulle gjøre.
+                {requestedNextPath ? (
+                  <>
+                    {" "} Nåværende sti: <code className="rounded bg-zinc-900/70 px-2 py-0.5 text-amber-200">{requestedNextPath}</code>
+                  </>
+                ) : null}
+              </div>
+            ) : requestedNextPath ? (
+              <div className="mt-4 rounded-2xl border border-amber-900/50 bg-amber-950/30 px-4 py-3 text-sm text-amber-100">
+                👉 Etter login sendes du videre til: <code className="rounded bg-zinc-900/70 px-2 py-0.5 text-amber-200">{requestedNextPath}</code>
               </div>
             ) : null}
 
