@@ -57,6 +57,44 @@ export function AdminQueueClient() {
   const [availableNewCount, setAvailableNewCount] = useState(0);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
+
+  const canDeleteSubmissions = Boolean(
+    access?.role === "SUPERADMIN" || access?.role === "FAGANSVARLIG",
+  );
+
+  const handleDelete = useCallback(async (id: string, title: string) => {
+    const typeOk = confirm(
+      `Er du HELT sikker på at du vil slette denne saken?\n\n${title}\n\nSletting er permanent. Alle revurderinger, bilder, notater og historikk blir slettet fra databasen. Bilder i Storage må slettes manuelt om nødvendig.\n\nSkriv inn nøyaktig ordet Slett for å fortsette:`,
+    );
+    if (!typeOk) return;
+
+    const promptAns = (
+      window.prompt(
+        'For å bekrefte, skriv nøyaktig ordet "Slett" (stor S):',
+        "",
+      ) ?? ""
+    ).trim();
+    if (promptAns !== "Slett") {
+      alert("Sletting avbrutt – du skrev ikke riktig ord.");
+      return;
+    }
+
+    if (!supabase) return;
+    setDeletingId(id);
+    try {
+      const res = await supabase.rpc("varroa_delete_submission_as_admin", {
+        p_submission_id: id,
+      });
+      if (res.error) throw res.error;
+      setItems((prev) => prev.filter((x) => x.id !== id));
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e);
+      alert("Kunne ikke slette saken: " + msg);
+    } finally {
+      setDeletingId(null);
+    }
+  }, [supabase]);
 
   const view = (searchParams.get("view") as QueueView | null) ?? "all";
 
@@ -384,13 +422,14 @@ export function AdminQueueClient() {
             </section>
 
             <section className="overflow-hidden rounded-3xl border border-zinc-800 bg-zinc-900">
-                <div className="hidden grid-cols-[1.1fr_1fr_0.8fr_0.9fr_1.1fr_110px] gap-3 border-b border-zinc-800 px-5 py-4 text-xs font-semibold uppercase tracking-wide text-zinc-500 lg:grid">
+                <div className="hidden grid-cols-[1.1fr_1fr_0.8fr_0.9fr_1.1fr_110px_minmax(0,1fr)] gap-3 border-b border-zinc-800 px-5 py-4 text-xs font-semibold uppercase tracking-wide text-zinc-500 lg:grid">
                 <div>Sak</div>
                 <div>Status</div>
                   <div>{ownerColumnLabel}</div>
                 <div>Midd</div>
                 <div>Sist oppdatert</div>
                 <div>Åpne</div>
+                {canDeleteSubmissions ? <div className="text-right">Slett</div> : null}
               </div>
 
               {filteredItems.length === 0 ? (
@@ -406,49 +445,74 @@ export function AdminQueueClient() {
                     view === "kontroll"
                       ? formatWorkerLabel(access.userId, item.processed_by)
                       : formatWorkerLabel(access.userId, item.assigned_to);
+                  const rowCols = canDeleteSubmissions
+                    ? "grid-cols-1 gap-3 lg:grid-cols-[1.1fr_1fr_0.8fr_0.9fr_1.1fr_110px_minmax(0,1fr)] lg:items-center"
+                    : "grid-cols-1 gap-3 lg:grid-cols-[1.1fr_1fr_0.8fr_0.9fr_1.1fr_110px] lg:items-center";
+                  const isDeleting = deletingId === item.id;
                   return (
-                    <a
+                    <div
                       key={item.id}
-                      href={appendAdminContext(
-                        `${basePath}/admin/innsendinger/innsending/?id=${encodeURIComponent(item.id)}`,
-                        adminContextSearch,
-                      )}
-                      className="block px-5 py-4 hover:bg-zinc-950/60"
+                      className="px-5 py-4 hover:bg-zinc-950/60"
                     >
-                      <div className="grid grid-cols-1 gap-3 lg:grid-cols-[1.1fr_1fr_0.8fr_0.9fr_1.1fr_110px] lg:items-center">
-                        <div>
-                          <div className="text-sm font-semibold text-zinc-50">
-                            {getTypeLabel(item.type)}
+                      <div className={`grid ${rowCols}`}>
+                        <a
+                          href={appendAdminContext(
+                            `${basePath}/admin/innsendinger/innsending/?id=${encodeURIComponent(item.id)}`,
+                            adminContextSearch,
+                          )}
+                          className="contents"
+                        >
+                          <div>
+                            <div className="text-sm font-semibold text-zinc-50">
+                              {getTypeLabel(item.type)}
+                            </div>
+                            <div className="mt-1 text-xs text-zinc-500">
+                              Opprettet {formatDateTime(item.created_at)}
+                            </div>
+                            <div className="mt-2 line-clamp-2 text-sm text-zinc-300">
+                              {item.note || "Ingen kommentar fra innsendingen."}
+                            </div>
                           </div>
-                          <div className="mt-1 text-xs text-zinc-500">
-                            Opprettet {formatDateTime(item.created_at)}
-                          </div>
-                          <div className="mt-2 line-clamp-2 text-sm text-zinc-300">
-                            {item.note || "Ingen kommentar fra innsendingen."}
-                          </div>
-                        </div>
 
-                        <div className="lg:justify-self-start">
-                          <div
-                            className={[
-                              "inline-flex rounded-full border px-3 py-1 text-[11px] font-semibold",
-                              ui.chipClass,
-                            ].join(" ")}
-                          >
-                            {ui.label}
+                          <div className="lg:justify-self-start">
+                            <div
+                              className={[
+                                "inline-flex rounded-full border px-3 py-1 text-[11px] font-semibold",
+                                ui.chipClass,
+                              ].join(" ")}
+                            >
+                              {ui.label}
+                            </div>
                           </div>
-                        </div>
 
-                        <div className="text-sm text-zinc-300">{assignedLabel}</div>
-                        <div className="text-sm text-zinc-300">
-                          {item.manual_mite_count != null ? item.manual_mite_count : "—"}
-                        </div>
-                        <div className="text-sm text-zinc-300">
-                          {formatDateTime(item.updated_at ?? item.created_at)}
-                        </div>
-                        <div className="text-sm font-semibold text-amber-300">Åpne →</div>
+                          <div className="text-sm text-zinc-300">{assignedLabel}</div>
+                          <div className="text-sm text-zinc-300">
+                            {item.manual_mite_count != null ? item.manual_mite_count : "—"}
+                          </div>
+                          <div className="text-sm text-zinc-300">
+                            {formatDateTime(item.updated_at ?? item.created_at)}
+                          </div>
+                          <div className="text-sm font-semibold text-amber-300">Åpne →</div>
+                        </a>
+                        {canDeleteSubmissions ? (
+                          <div className="mt-3 flex justify-end sm:mt-0">
+                            <button
+                              type="button"
+                              onClick={() => void handleDelete(item.id, getTypeLabel(item.type))}
+                              disabled={isDeleting || deletingId !== null}
+                              className={[
+                                "inline-flex h-9 items-center gap-1.5 rounded-xl border px-3 text-xs font-semibold transition",
+                                isDeleting
+                                  ? "border-red-900/70 bg-red-950/60 text-red-100"
+                                  : "border-red-900/40 bg-red-950/20 text-red-200 hover:bg-red-950/40 disabled:opacity-60",
+                              ].join(" ")}
+                            >
+                              {isDeleting ? "Sletter…" : "🗑️ Slett sak"}
+                            </button>
+                          </div>
+                        ) : null}
                       </div>
-                    </a>
+                    </div>
                   );
                 })}
               </div>
