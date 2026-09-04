@@ -10,6 +10,8 @@ import { useOnlineStatus } from "@/lib/useOnlineStatus";
 import { getVarroaAccess, type VarroaAccess } from "@/lib/varroaRoles";
 import {
   formatDateTime,
+  getDisplayNameFromEmail,
+  getRoleLabel,
   getStatusUi,
   getSubmissionSelect,
   getTypeLabel,
@@ -115,12 +117,20 @@ export default function AdminArchivePage() {
   return (
     <div className="min-h-dvh px-4 pb-10 pt-8">
       <header className="mx-auto w-full max-w-3xl">
-        <div className="flex items-center justify-between">
-          <div>
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="flex-shrink-0">
             <div className="text-lg font-semibold">Admin</div>
             <div className="text-xs text-zinc-400">Arkiv</div>
           </div>
-          <div className="flex items-center gap-4">
+          <div className="hidden flex-1 text-center md:block">
+            {access?.role && access.email ? (
+              <div className="text-sm font-medium text-amber-200/90">
+                👋 Velkommen {getDisplayNameFromEmail(access.email)} ({getRoleLabel(access.role)}), ha
+                en fin dag!
+              </div>
+            ) : null}
+          </div>
+          <div className="flex flex-shrink-0 items-center gap-4">
             {returnInfo.href ? (
               <a
                 href={returnInfo.href}
@@ -144,6 +154,13 @@ export default function AdminArchivePage() {
             </a>
           </div>
         </div>
+        {access?.role && access.email ? (
+          <div className="mt-2 text-center md:hidden">
+            <div className="text-xs font-medium text-amber-200/90">
+              👋 Velkommen {getDisplayNameFromEmail(access.email)} ({getRoleLabel(access.role)})
+            </div>
+          </div>
+        ) : null}
 
         {!isOnline ? (
           <div className="mt-4 rounded-2xl border border-red-900/60 bg-red-950/40 px-4 py-3 text-sm text-red-200">

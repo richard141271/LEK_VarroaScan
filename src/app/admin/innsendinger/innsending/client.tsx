@@ -14,8 +14,10 @@ import {
   createSignedImages,
   formatWorkerLabel,
   formatDateTime,
+  getDisplayNameFromEmail,
   getHistoryActionLabel,
   getQualityOptions,
+  getRoleLabel,
   getStatusUi,
   getSubmissionSelect,
   getTypeLabel,
@@ -689,13 +691,21 @@ export function ProductionSubmissionClient() {
     <div className="min-h-dvh px-4 pb-10 pt-8">
       <header className="mx-auto w-full max-w-[1500px]">
         <div className="flex flex-wrap items-center justify-between gap-3">
-          <div>
+          <div className="flex-shrink-0">
             <div className="text-lg font-semibold">Arbeidsflate</div>
             <div className="text-xs text-zinc-400">
               Stor bildeflate, rask lagring og sporbar historikk.
             </div>
           </div>
-          <div className="flex flex-wrap items-center gap-3">
+          <div className="hidden flex-1 text-center md:block">
+            {access?.role && access.email ? (
+              <div className="text-sm font-medium text-amber-200/90">
+                👋 Velkommen {getDisplayNameFromEmail(access.email)} ({getRoleLabel(access.role)}), ha
+                en fin dag!
+              </div>
+            ) : null}
+          </div>
+          <div className="flex flex-shrink-0 flex-wrap items-center gap-3">
             {returnInfo.href ? (
               <a
                 href={returnInfo.href}
@@ -727,6 +737,13 @@ export function ProductionSubmissionClient() {
             </button>
           </div>
         </div>
+        {access?.role && access.email ? (
+          <div className="mt-2 text-center md:hidden">
+            <div className="text-xs font-medium text-amber-200/90">
+              👋 Velkommen {getDisplayNameFromEmail(access.email)} ({getRoleLabel(access.role)})
+            </div>
+          </div>
+        ) : null}
       </header>
 
       <main className="mx-auto mt-6 w-full max-w-[1500px] space-y-4">

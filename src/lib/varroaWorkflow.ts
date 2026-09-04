@@ -167,6 +167,22 @@ export function getRoleLabel(role: VarroaRole | null) {
   }
 }
 
+export function getDisplayNameFromEmail(email: string | null | undefined): string {
+  if (!email) return "Gjest";
+  const local = String(email).split("@")[0] ?? "";
+  if (!local) return email;
+  const cleaned = local
+    .replace(/[0-9._-]+/g, " ")
+    .trim()
+    .replace(/\s+/g, " ");
+  if (!cleaned) return local;
+  return cleaned
+    .split(" ")
+    .map((w) => (w ? w[0]!.toUpperCase() + w.slice(1).toLowerCase() : w))
+    .join(" ")
+    .trim();
+}
+
 export function getTypeLabel(type: string | null | undefined) {
   if (type === "BUNNBRETT_FOTO") return "Bunnbrett foto";
   if (type === "KONTROLLFOTO") return "Kontrollfoto";

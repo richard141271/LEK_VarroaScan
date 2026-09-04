@@ -23,6 +23,7 @@ export type VarroaAccess = {
   canControl: boolean;
   canWork: boolean;
   canUseQueue: boolean;
+  canDeleteAnything: boolean;
 };
 
 export function buildRoleAccess(
@@ -30,19 +31,17 @@ export function buildRoleAccess(
   email: string | null,
   role: VarroaRole | null,
 ): VarroaAccess {
-  const canManageSystem = role === "SUPERADMIN";
-  const canSeeAll = role === "SUPERADMIN" || role === "FAGANSVARLIG";
-  const canControl = role === "SUPERADMIN" || role === "FAGANSVARLIG";
-
+  const privileged = role === "SUPERADMIN" || role === "FAGANSVARLIG";
   return {
     userId,
     email,
     role,
-    canManageSystem,
-    canSeeAll,
-    canControl,
+    canManageSystem: privileged,
+    canSeeAll: privileged,
+    canControl: privileged,
     canWork: role != null,
     canUseQueue: role != null,
+    canDeleteAnything: privileged,
   };
 }
 
