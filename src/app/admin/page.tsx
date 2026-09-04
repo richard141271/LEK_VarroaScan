@@ -89,18 +89,6 @@ export default function AdminInboxPage() {
     window.location.replace(base);
   }, [basePath, preservedContextForLogin]);
 
-  const makeLoginRedirectTo = useCallback(
-    (preferredPath: string) => {
-      const params = new URLSearchParams(
-        preservedContextForLogin.replace(/^\?/, ""),
-      );
-      if (!params.has("next")) params.set("next", preferredPath);
-      const query = params.toString();
-      return query ? `/admin/?${query}` : "/admin/";
-    },
-    [preservedContextForLogin],
-  );
-
   const supabase = useMemo(() => getSupabaseClient(), []);
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -110,8 +98,22 @@ export default function AdminInboxPage() {
     | "register"
     | "forgot"
     | "recovery"
-  >("login");
-  const [authInfo, setAuthInfo] = useState<string | null>(null);
+  >(() => {
+    if (typeof window === "undefined") return "login";
+    const hash = window.location.hash.replace(/^#/, "");
+    if (!hash) return "login";
+    const params = new URLSearchParams(hash);
+    return params.get("type") === "recovery" ? "recovery" : "login";
+  });
+  const [authInfo, setAuthInfo] = useState<string | null>(() => {
+    if (typeof window === "undefined") return null;
+    const hash = window.location.hash.replace(/^#/, "");
+    if (!hash) return null;
+    const params = new URLSearchParams(hash);
+    return params.get("type") === "recovery"
+      ? "Du kom fra en lenke for å tilbakestille passord. Skriv inn et nytt passord under, så lagrer vi det."
+      : null;
+  });
   const [authError, setAuthError] = useState<string | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
 
@@ -135,27 +137,30 @@ export default function AdminInboxPage() {
   const [usersError, setUsersError] = useState<string | null>(null);
   const [usersLoading, setUsersLoading] = useState(false);
 
+  const loadUsers = useCallback(async () => {
+    if (!supabase || !access?.canManageSystem) return;
+    setUsersError(null);
+    setUsersLoading(true);
+    try {
+      const res = await supabase.rpc("varroa_list_users");
+      if (res.error) throw res.error;
+      setUsers((res.data ?? []) as unknown as VarroaUserRecord[]);
+    } catch (e) {
+      const msg =
+        typeof e === "object" && e && "message" in e
+          ? String((e as { message?: unknown }).message)
+          : "Ukjent feil";
+      setUsersError(msg);
+    } finally {
+      setUsersLoading(false);
+    }
+  }, [access?.canManageSystem, supabase]);
+
   const isFromBiensVokterAdmin = useMemo(() => {
     if (typeof window === "undefined") return false;
     const params = new URLSearchParams(window.location.search);
     const src = (params.get("source") ?? "").toLowerCase();
     return src.includes("biens") || src.includes("bien") || params.has("returnTo");
-  }, []);
-
-  useEffect(() => {
-    if (typeof window === "undefined") return;
-    if (!window.location.hash) return;
-
-    const hash = window.location.hash.replace(/^#/, "");
-    if (!hash) return;
-    const params = new URLSearchParams(hash);
-    const type = params.get("type");
-    if (type === "recovery") {
-      setAuthMode("recovery");
-      setAuthInfo(
-        "Du kom fra en lenke for å tilbakestille passord. Skriv inn et nytt passord under, så lagrer vi det.",
-      );
-    }
   }, []);
 
   const reload = useCallback(async () => {
@@ -181,6 +186,8 @@ export default function AdminInboxPage() {
 
       const nextAccess = await getVarroaAccess(supabase, session);
       setAccess(nextAccess);
+      if (nextAccess.canManageSystem) void loadUsers();
+      else setUsers([]);
       if (!nextAccess.role) {
         setItems([]);
         setAvailableNewCount(0);
@@ -233,7 +240,7 @@ export default function AdminInboxPage() {
     } finally {
       setIsLoading(false);
     }
-  }, [goAfterLogin, requestedNextPath, supabase]);
+  }, [goAfterLogin, loadUsers, requestedNextPath, supabase]);
 
   useEffect(() => {
     const t = window.setTimeout(() => {
@@ -247,14 +254,6 @@ export default function AdminInboxPage() {
     if (requestedNextPath === "/admin/" || requestedNextPath === "/admin") return;
     window.location.replace(`${basePath}${requestedNextPath}`);
   }, [access?.role, basePath, isAuthed, requestedNextPath]);
-
-  useEffect(() => {
-    if (access?.canManageSystem) {
-      void loadUsers();
-    } else {
-      setUsers([]);
-    }
-  }, [access?.canManageSystem, supabase]);
 
   const signInWithPassword = async () => {
     setAuthError(null);
@@ -507,25 +506,6 @@ export default function AdminInboxPage() {
     if (!supabase) return;
     await supabase.auth.signOut();
     await reload();
-  };
-
-  const loadUsers = async () => {
-    if (!supabase || !access?.canManageSystem) return;
-    setUsersError(null);
-    setUsersLoading(true);
-    try {
-      const res = await supabase.rpc("varroa_list_users");
-      if (res.error) throw res.error;
-      setUsers((res.data ?? []) as unknown as VarroaUserRecord[]);
-    } catch (e) {
-      const msg =
-        typeof e === "object" && e && "message" in e
-          ? String((e as { message?: unknown }).message)
-          : "Ukjent feil";
-      setUsersError(msg);
-    } finally {
-      setUsersLoading(false);
-    }
   };
 
   const setUserRole = async (
