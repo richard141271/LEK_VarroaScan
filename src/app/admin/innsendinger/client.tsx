@@ -89,8 +89,16 @@ export function AdminQueueClient() {
       if (res.error) throw res.error;
       setItems((prev) => prev.filter((x) => x.id !== id));
     } catch (e: unknown) {
-      const msg = e instanceof Error ? e.message : String(e);
-      alert("Kunne ikke slette saken: " + msg);
+      let msg = "Ukjent feil";
+      if (typeof e === "object" && e) {
+        const err = e as { message?: unknown; code?: unknown; details?: unknown };
+        if (typeof err.message === "string") msg = err.message;
+        else if (typeof err.code === "string") msg = `Feilkode ${err.code}`;
+        else msg = String(e);
+      } else if (typeof e === "string") {
+        msg = e;
+      }
+      alert("Kunne ikke slette saken:\n\n" + msg);
     } finally {
       setDeletingId(null);
     }
