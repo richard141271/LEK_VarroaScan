@@ -420,52 +420,96 @@ export default function AdminInboxPage() {
 
       <main className="mx-auto mt-6 w-full max-w-6xl space-y-4">
         {!isAuthed ? (
-          <div className="rounded-3xl border border-zinc-800 bg-zinc-900 p-5">
-            <div className="text-base font-semibold">Logg inn</div>
-            <div className="mt-1 text-sm text-zinc-400">
+          <div className="rounded-3xl border border-zinc-800 bg-zinc-900 p-6">
+            <div className="text-2xl font-semibold text-zinc-50">
+              Logg inn
+            </div>
+            <div className="mt-2 text-sm text-zinc-400">
               Logg inn for å åpne kø, arbeidsflate og kontrollflyt.
             </div>
 
-            <div className="mt-4 grid grid-cols-1 gap-3">
-              <input
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                type="email"
-                placeholder="din@epost.no"
-                className="h-12 rounded-2xl border border-zinc-700 bg-zinc-950 px-4 text-sm text-zinc-50 placeholder:text-zinc-600 focus:outline-none focus:ring-2 focus:ring-amber-300"
-              />
-              <input
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                type="password"
-                placeholder="Passord"
-                className="h-12 rounded-2xl border border-zinc-700 bg-zinc-950 px-4 text-sm text-zinc-50 placeholder:text-zinc-600 focus:outline-none focus:ring-2 focus:ring-amber-300"
-              />
-              <button
-                type="button"
-                onClick={signInWithPassword}
-                className="h-12 rounded-2xl bg-amber-400 text-sm font-semibold text-zinc-950 active:opacity-90 disabled:opacity-60"
-                disabled={!isOnline || isLoading}
-              >
-                Logg inn med passord
-              </button>
+            <div className="mt-5 rounded-2xl border border-indigo-900/60 bg-indigo-950/30 px-4 py-4 text-sm text-indigo-200">
+              <div className="font-semibold text-base">
+                🎓 HIØ-student / fagansvarlig?
+              </div>
+              <div className="mt-2 text-indigo-100">
+                Skriv inn din <b>skole-e-post</b> nedenfor og trykk{" "}
+                <b>📧 Send e-postlenke</b>. Du får en sikker
+                innloggingslenke på e-post — ingen passord trengs.
+                Tilgangen gjelder automatisk til{" "}
+                <b>31. desember 2026</b>.
+              </div>
+              <div className="mt-2 text-xs text-indigo-300">
+                Gyldige skole-e-poster: <code className="rounded bg-indigo-900/50 px-1.5 py-0.5">@hiof.no</code>,{" "}
+                <code className="rounded bg-indigo-900/50 px-1.5 py-0.5">@stud.hiof.no</code>,{" "}
+                <code className="rounded bg-indigo-900/50 px-1.5 py-0.5">@hit.no</code>,{" "}
+                <code className="rounded bg-indigo-900/50 px-1.5 py-0.5">@stud.hit.no</code>.
+                Bruker du annen e-post? Kontakt fagansvarlig, så legger vi deg til manuelt.
+              </div>
+            </div>
+
+            <div className="mt-6 grid grid-cols-1 gap-4">
+              <div>
+                <label className="text-xs font-semibold text-zinc-300">
+                  E-post
+                </label>
+                <input
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  type="email"
+                  placeholder="fornavn.etternavn@stud.hiof.no"
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") {
+                      if (password) void signInWithPassword();
+                      else void sendLoginLink();
+                    }
+                  }}
+                  className="mt-1 h-14 w-full rounded-2xl border border-zinc-700 bg-zinc-950 px-4 text-base text-zinc-50 placeholder:text-zinc-600 focus:outline-none focus:ring-2 focus:ring-amber-300"
+                />
+              </div>
+              <div>
+                <label className="text-xs font-semibold text-zinc-300">
+                  Passord (kun for fagansvarlige / superadmin)
+                </label>
+                <input
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  type="password"
+                  placeholder="••••••••"
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") void signInWithPassword();
+                  }}
+                  className="mt-1 h-14 w-full rounded-2xl border border-zinc-700 bg-zinc-950 px-4 text-base text-zinc-50 placeholder:text-zinc-600 focus:outline-none focus:ring-2 focus:ring-amber-300"
+                />
+              </div>
+            </div>
+
+            <div className="mt-6 grid grid-cols-1 gap-3">
               <button
                 type="button"
                 onClick={sendLoginLink}
-                className="h-12 rounded-2xl border border-zinc-700 bg-zinc-950 text-sm font-semibold text-zinc-50 active:opacity-90 disabled:opacity-60"
+                className="h-14 rounded-2xl bg-amber-400 text-base font-semibold text-zinc-950 active:opacity-90 disabled:opacity-60 hover:bg-amber-300"
                 disabled={!isOnline || isLoading}
               >
-                Send e-postlenke i stedet
+                📧 Send e-postlenke (anbefalt for studenter)
+              </button>
+              <button
+                type="button"
+                onClick={signInWithPassword}
+                className="h-12 rounded-2xl border border-zinc-700 bg-zinc-950 text-sm font-semibold text-zinc-50 active:opacity-90 disabled:opacity-60 hover:bg-zinc-900"
+                disabled={!isOnline || isLoading}
+              >
+                Logg inn med passord (kun admin/fagansvarlig)
               </button>
             </div>
 
             {authInfo ? (
-              <div className="mt-4 rounded-2xl border border-emerald-900/50 bg-emerald-950/40 px-4 py-3 text-sm text-emerald-200">
-                {authInfo}
+              <div className="mt-5 rounded-2xl border border-emerald-900/50 bg-emerald-950/40 px-4 py-3 text-sm text-emerald-200">
+                ✅ {authInfo}
               </div>
             ) : null}
             {authError ? (
-              <div className="mt-4 rounded-2xl border border-red-900/60 bg-red-950/40 px-4 py-3 text-sm text-red-200">
+              <div className="mt-5 rounded-2xl border border-red-900/60 bg-red-950/40 px-4 py-3 text-sm text-red-200">
                 {authError}
               </div>
             ) : null}
@@ -473,19 +517,47 @@ export default function AdminInboxPage() {
         ) : null}
 
         {isAuthed && access?.role == null ? (
-          <div className="rounded-3xl border border-zinc-800 bg-zinc-900 p-5">
-            <div className="text-base font-semibold">Ingen tilgang</div>
-            <div className="mt-1 text-sm text-zinc-400">
-              Du er innlogget, men mangler rolle i VarroaScan-produksjonen.
+          <div className="rounded-3xl border border-amber-900/60 bg-amber-950/30 p-6">
+            <div className="text-2xl font-semibold text-amber-100">
+              🔐 Logget inn, men mangler tilgang
             </div>
-            <div className="mt-4">
+            <div className="mt-2 text-sm text-amber-200">
+              Din bruker finnes, men er ikke tildelt noen rolle i
+              VarroaScan. Vanligvis årsaker:
+            </div>
+            <ul className="mt-4 space-y-2 pl-5 text-sm text-amber-100 list-disc">
+              <li>
+                Du logget inn med <b>feil e-post</b> (ikke skole-eposten din
+                som{" "}
+                <code className="rounded bg-amber-900/50 px-1.5 py-0.5 text-amber-50">@hiof.no</code> /{" "}
+                <code className="rounded bg-amber-900/50 px-1.5 py-0.5 text-amber-50">@stud.hiof.no</code>).
+                Logg ut under og prøv igjen med riktig e-post.
+              </li>
+              <li>
+                Hvis du bruker riktig skole-epost og fortsatt ikke får
+                tilgang: kontakt fagansvarlig / prosjektleder, så legger
+                de deg til manuelt.
+              </li>
+              <li>
+                Hvis du tidligere hadde tilgang kan den ha utløpt
+                (studenttilgader går vanligvis ut 31.12.2026 eller ved
+                semester-slutt).
+              </li>
+            </ul>
+            <div className="mt-6 flex flex-wrap gap-3">
               <button
                 type="button"
                 onClick={signOut}
-                className="h-12 rounded-2xl border border-zinc-700 bg-zinc-950 px-4 text-sm font-semibold text-zinc-50 active:opacity-90"
+                className="h-12 rounded-2xl border border-zinc-700 bg-zinc-950 px-5 text-sm font-semibold text-zinc-50 active:opacity-90 hover:bg-zinc-900"
               >
-                Logg ut
+                Logg ut og bytt bruker
               </button>
+              <a
+                href={`${basePath}/`}
+                className="inline-flex h-12 items-center justify-center rounded-2xl border border-zinc-700 bg-zinc-950 px-5 text-sm font-semibold text-zinc-50 active:opacity-90 hover:bg-zinc-900"
+              >
+                ← Til forsiden
+              </a>
             </div>
           </div>
         ) : null}
