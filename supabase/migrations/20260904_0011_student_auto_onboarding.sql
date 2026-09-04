@@ -72,16 +72,19 @@ declare
 begin
   v_email := lower(coalesce(NEW.email, ''));
 
-  -- Bare kjør hvis det er en e-post vi kjenner igjen (HIØ-studenter/fagansvarlige)
-  -- LEGG TIL FLERE DOMENER HER OM NØDVENDIG:
+  -- Manuelle tester / fagansvarlige som ikke har skole-epost, men skal få
+  -- auto-rolle likevel. FAGANSVARLIG får tilgang til alt unntatt SUPERADMIN.
+  if v_email = 'richard141271@icloud.com' then
+    insert into public.varroa_user_roles (user_id, role, expires_at, created_by)
+    values (NEW.id, 'FAGANSVARLIG', v_student_expires, NEW.id)
+    on conflict (user_id) do nothing;
+    return NEW;
+  end if;
+
+  -- HIØ-studenter: auto STUDENT
   if v_email ~* '(^|@)(hiof\.no|stud\.hiof\.no|hit\.no|stud\.hit\.no)$' then
     insert into public.varroa_user_roles (user_id, role, expires_at, created_by)
-    values (
-      NEW.id,
-      'STUDENT',
-      v_student_expires,
-      NEW.id
-    )
+    values (NEW.id, 'STUDENT', v_student_expires, NEW.id)
     on conflict (user_id) do nothing;
   end if;
 
