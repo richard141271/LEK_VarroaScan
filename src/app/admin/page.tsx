@@ -55,7 +55,12 @@ export default function AdminInboxPage() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
-  const [authMode, setAuthMode] = useState<"login" | "register" | "forgot">("login");
+  const [authMode, setAuthMode] = useState<
+    | "login"
+    | "register"
+    | "forgot"
+    | "recovery"
+  >("login");
   const [authInfo, setAuthInfo] = useState<string | null>(null);
   const [authError, setAuthError] = useState<string | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -65,6 +70,22 @@ export default function AdminInboxPage() {
   const [items, setItems] = useState<VarroaSubmissionRecord[]>([]);
   const [availableNewCount, setAvailableNewCount] = useState(0);
   const [isLoading, setIsLoading] = useState(false);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    if (!window.location.hash) return;
+
+    const hash = window.location.hash.replace(/^#/, "");
+    if (!hash) return;
+    const params = new URLSearchParams(hash);
+    const type = params.get("type");
+    if (type === "recovery") {
+      setAuthMode("recovery");
+      setAuthInfo(
+        "Du kom fra en lenke for å tilbakestille passord. Skriv inn et nytt passord under, så lagrer vi det.",
+      );
+    }
+  }, []);
 
   const reload = useCallback(async () => {
     setAuthError(null);
@@ -295,6 +316,51 @@ export default function AdminInboxPage() {
     }
 
     setAuthInfo("Hvis bruker finnes er det sendt en lenke på e-post for å tilbakestille passordet ditt. Sjekk søppelpost!");
+  };
+
+  const saveRecoveryPassword = async () => {
+    setAuthError(null);
+    setAuthInfo(null);
+
+    if (!isOnline) {
+      setAuthError("Du er offline. Lagring krever nett.");
+      return;
+    }
+
+    if (!supabase) {
+      setAuthError("Mangler Supabase-konfig.");
+      return;
+    }
+
+    if (!password || password.length < 6) {
+      setAuthError("Passordet må være minst 6 tegn.");
+      return;
+    }
+
+    if (password !== confirmPassword) {
+      setAuthError("Passordene er ikke like i de to feltene.");
+      return;
+    }
+
+    setIsLoading(true);
+    const res = await supabase.auth.updateUser({ password });
+    setIsLoading(false);
+
+    if (res.error) {
+      setAuthError(res.error.message);
+      return;
+    }
+
+    if (typeof window !== "undefined" && window.location.hash) {
+      try {
+        history.replaceState(null, "", " ");
+      } catch {
+        // ignore
+      }
+    }
+
+    setAuthInfo("Passordet ditt er lagret! Nå er du logget inn og kan bruke passordet ditt neste gang. Laster arbeidsflaten…");
+    await reload();
   };
 
   const sendLoginLink = async () => {
@@ -639,8 +705,10 @@ export default function AdminInboxPage() {
                       if (password) void signInWithPassword();
                     } else if (authMode === "register") {
                       void registerWithPassword();
-                    } else {
+                    } else if (authMode === "forgot") {
                       void resetPassword();
+                    } else if (authMode === "recovery") {
+                      void saveRecoveryPassword();
                     }
                   }}
                   className="mt-1 h-14 w-full rounded-2xl border border-zinc-700 bg-zinc-950 px-4 text-base text-zinc-50 placeholder:text-zinc-600 focus:outline-none focus:ring-2 focus:ring-amber-300"
@@ -650,25 +718,32 @@ export default function AdminInboxPage() {
               {authMode !== "forgot" ? (
                 <div>
                   <label className="text-xs font-semibold text-zinc-300">
-                  Passord
-                </label>
-                <input
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                  type="password"
-                  placeholder={authMode === "register" ? "Minst 6 tegn" : "••••••••"}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter") {
-                      if (authMode === "login") void signInWithPassword();
-                      if (authMode === "register") void registerWithPassword();
+                    Passord
+                  </label>
+                  <input
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                    type="password"
+                    placeholder={
+                      authMode === "register"
+                        ? "Minst 6 tegn"
+                        : authMode === "recovery"
+                        ? "Nytt passord (minst 6 tegn)"
+                        : "••••••••"
                     }
-                  }}
-                  className="mt-1 h-14 w-full rounded-2xl border border-zinc-700 bg-zinc-950 px-4 text-base text-zinc-50 placeholder:text-zinc-600 focus:outline-none focus:ring-2 focus:ring-amber-300"
-                />
-              </div>
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") {
+                        if (authMode === "login") void signInWithPassword();
+                        if (authMode === "register") void registerWithPassword();
+                        if (authMode === "recovery") void saveRecoveryPassword();
+                      }
+                    }}
+                    className="mt-1 h-14 w-full rounded-2xl border border-zinc-700 bg-zinc-950 px-4 text-base text-zinc-50 placeholder:text-zinc-600 focus:outline-none focus:ring-2 focus:ring-amber-300"
+                  />
+                </div>
               ) : null}
 
-              {authMode === "register" ? (
+              {authMode === "register" || authMode === "recovery" ? (
                 <div>
                   <label className="text-xs font-semibold text-zinc-300">
                     Gjenta passord
@@ -679,7 +754,10 @@ export default function AdminInboxPage() {
                     type="password"
                     placeholder="Skriv samme passord igjen"
                     onKeyDown={(e) => {
-                      if (e.key === "Enter") void registerWithPassword();
+                      if (e.key === "Enter") {
+                        if (authMode === "register") void registerWithPassword();
+                        if (authMode === "recovery") void saveRecoveryPassword();
+                      }
                     }}
                     className="mt-1 h-14 w-full rounded-2xl border border-zinc-700 bg-zinc-950 px-4 text-base text-zinc-50 placeholder:text-zinc-600 focus:outline-none focus:ring-2 focus:ring-amber-300"
                   />
@@ -738,6 +816,40 @@ export default function AdminInboxPage() {
                   <button
                     type="button"
                     onClick={() => setAuthMode("login")}
+                    className="h-10 text-sm font-semibold text-zinc-300 hover:text-zinc-100"
+                  >
+                    ← Tilbake til innlogging
+                  </button>
+                </>
+              ) : null}
+
+              {authMode === "recovery" ? (
+                <>
+                  <div className="rounded-2xl border border-amber-900/60 bg-amber-950/30 px-4 py-4 text-sm text-amber-100">
+                    <div className="font-semibold text-base">
+                      🔑 Sett nytt passord
+                    </div>
+                    <div className="mt-2">
+                      Nettleseren din husket at du kom hit fra en lenke i
+                      e-posten. Skriv inn et nytt passord du kan huske, så
+                      lagrer vi det på brukeren din umiddelbart.
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={saveRecoveryPassword}
+                    className="h-14 rounded-2xl bg-amber-400 text-base font-semibold text-zinc-950 active:opacity-90 disabled:opacity-60 hover:bg-amber-300"
+                    disabled={!isOnline || isLoading}
+                  >
+                    {isLoading ? "Lagrer passord…" : "💾 Lagre nytt passord og logg inn"}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setAuthMode("login");
+                      setAuthInfo(null);
+                      setAuthError(null);
+                    }}
                     className="h-10 text-sm font-semibold text-zinc-300 hover:text-zinc-100"
                   >
                     ← Tilbake til innlogging
