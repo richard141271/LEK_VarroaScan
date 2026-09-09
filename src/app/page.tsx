@@ -449,11 +449,21 @@ export default function Home() {
     let step = "Starter";
     setIsSubmitting(true);
     try {
-      const { data: sessionData } = await supabase.auth.getSession();
-      const session = sessionData.session;
-      const userId = session?.user?.id ?? null;
-      const userName =
-        (session?.user?.user_metadata?.name as string | undefined) ?? null;
+      let session: Awaited<ReturnType<typeof supabase.auth.getSession>>["data"]["session"] = null;
+      let userId: string | null = null;
+      let userName: string | null = null;
+      try {
+        const { data: sessionData } = await supabase.auth.getSession();
+        session = sessionData.session;
+        userId = session?.user?.id ?? null;
+        userName =
+          (session?.user?.user_metadata?.name as string | undefined) ?? null;
+      } catch {
+        // Hvis det finnes en ødelagt/utløpt sesjon i localStorage → tøm den for å unngå "Failed to fetch" under upload
+        try { await supabase.auth.signOut({ scope: "local" }); } catch {}
+        session = null; userId = null; userName = null;
+      }
+
       const noteValue = note.trim() ? note.trim() : null;
       const supabaseBaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL ?? "";
 
@@ -465,13 +475,33 @@ export default function Home() {
         const safeExt = ext && ext.length <= 10 ? ext : "jpg";
         const objectPath = `submissions/${submissionId}/${crypto.randomUUID()}.${safeExt}`;
 
-        const uploadRes = await supabase.storage
+        let uploadRes = await supabase.storage
           .from("varroa-submissions")
           .upload(objectPath, img.file, {
             cacheControl: "3600",
             upsert: false,
             contentType: img.file.type || undefined,
           });
+
+        // Hvis vi fikk nettverksfeil pga ødelagt sesjon → tøm sesjon, prøv igjen SOM ANON
+        if (
+          uploadRes.error &&
+          (uploadRes.error.name === "AuthSessionMissingError" ||
+            uploadRes.error.message?.toLowerCase().includes("jwt") ||
+            uploadRes.error.message?.toLowerCase().includes("token") ||
+            uploadRes.error.message?.toLowerCase().includes("session") ||
+            uploadRes.error.__isNetworkError ||
+            uploadRes.error instanceof TypeError)
+        ) {
+          try { await supabase.auth.signOut({ scope: "local" }); } catch {}
+          uploadRes = await supabase.storage
+            .from("varroa-submissions")
+            .upload(objectPath, img.file, {
+              cacheControl: "3600",
+              upsert: false,
+              contentType: img.file.type || undefined,
+            });
+        }
 
         if (uploadRes.error) throw uploadRes.error;
         uploadedPaths.push(objectPath);
