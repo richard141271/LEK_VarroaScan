@@ -441,76 +441,97 @@ export default function Home() {
     }
 
     const supabase = getSupabaseClient();
-    if (!supabase) {
-      setError("Appen mangler Supabase-konfig (NEXT_PUBLIC_SUPABASE_*).");
+    const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL?.replace(/\/$/, "") ?? "";
+    const anonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ?? "";
+    if (!supabase || !supabaseUrl || !anonKey) {
+      setError("Appen mangler Supabase-konfig (NEXT_PUBLIC_SUPABASE_URL / NEXT_PUBLIC_SUPABASE_ANON_KEY).");
       return;
     }
 
     let step = "Starter";
     setIsSubmitting(true);
     try {
-      let session: Awaited<ReturnType<typeof supabase.auth.getSession>>["data"]["session"] = null;
-      let userId: string | null = null;
-      let userName: string | null = null;
+      // Opprydder eventuelle ødelagte/utløpte sesjoner for å unngå "Authorization: Bearer <utløpt>" → 401
       try {
         const { data: sessionData } = await supabase.auth.getSession();
-        session = sessionData.session;
-        userId = session?.user?.id ?? null;
-        userName =
-          (session?.user?.user_metadata?.name as string | undefined) ?? null;
+        const session = sessionData.session;
+        if (session?.user && (!session.expires_at || session.expires_at * 1000 < Date.now() + 60_000)) {
+          await supabase.auth.signOut({ scope: "local" });
+        }
       } catch {
-        // Hvis det finnes en ødelagt/utløpt sesjon i localStorage → tøm den for å unngå "Failed to fetch" under upload
         try { await supabase.auth.signOut({ scope: "local" }); } catch {}
-        session = null; userId = null; userName = null;
       }
 
+      // Hent SESSION PÅ NYTT (nå er den enten gyldig eller null)
+      const { data: sessionData2 } = await supabase.auth.getSession();
+      const session = sessionData2.session;
+      const userId = session?.user?.id ?? null;
+      const userName =
+        (session?.user?.user_metadata?.name as string | undefined) ?? null;
+      const jwtMaybe = (session?.access_token as string | undefined) ?? null;
+
       const noteValue = note.trim() ? note.trim() : null;
-      const supabaseBaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL ?? "";
 
       const submissionId = crypto.randomUUID();
       const uploadedPaths: string[] = [];
+
       for (const [index, img] of images.entries()) {
         step = `Laster opp bilde ${index + 1}/${images.length}`;
         const ext = img.file.name.split(".").pop()?.toLowerCase();
         const safeExt = ext && ext.length <= 10 ? ext : "jpg";
-        const objectPath = `submissions/${submissionId}/${crypto.randomUUID()}.${safeExt}`;
+        const filename = crypto.randomUUID() + "." + safeExt;
+        const objectPath = `submissions/${submissionId}/${filename}`;
 
-        let uploadRes = await supabase.storage
-          .from("varroa-submissions")
-          .upload(objectPath, img.file, {
-            cacheControl: "3600",
-            upsert: false,
-            contentType: img.file.type || undefined,
-          });
+        // 🎯 Vi bruker DIREKTE fetch for å laste opp → slipper alt av supabase-js bugs
+        //    Vi tar OGSÅ AUTH tokenet med bare hvis det finnes (ANON sender kun API key)
+        const url = `${supabaseUrl}/storage/v1/object/varroa-submissions/${encodeURIComponent(objectPath)}`;
+        const headers: Record<string, string> = {
+          "apikey": anonKey,
+          "Authorization": `Bearer ${jwtMaybe ?? anonKey}`,
+          "cache-control": "max-age=3600",
+          "x-upsert": "false",
+        };
+        if (img.file.type) headers["content-type"] = img.file.type;
 
-        // Hvis vi fikk nettverksfeil pga ødelagt sesjon → tøm sesjon, prøv igjen SOM ANON
-        if (
-          uploadRes.error &&
-          (uploadRes.error.name === "AuthSessionMissingError" ||
-            uploadRes.error.message?.toLowerCase().includes("jwt") ||
-            uploadRes.error.message?.toLowerCase().includes("token") ||
-            uploadRes.error.message?.toLowerCase().includes("session") ||
-            uploadRes.error.__isNetworkError ||
-            uploadRes.error instanceof TypeError)
-        ) {
-          try { await supabase.auth.signOut({ scope: "local" }); } catch {}
-          uploadRes = await supabase.storage
-            .from("varroa-submissions")
-            .upload(objectPath, img.file, {
-              cacheControl: "3600",
-              upsert: false,
-              contentType: img.file.type || undefined,
-            });
+        let response: Response;
+        try {
+          response = await fetch(url, { method: "POST", headers, body: img.file });
+        } catch (fetchErr) {
+          // Nettverksfeil (typisk CORS) — viser tydelig hva det er!
+          const msg =
+            fetchErr instanceof TypeError &&
+            (fetchErr.message.toLowerCase().includes("failed") || fetchErr.message === "Failed to fetch")
+              ? `CORS FEIL: Appens domene er IKKE lagt til i Supabase → Project Settings → API → CORS Origins. Legg til https://lek-varroa-scan.vercel.app (og https://*.vercel.app), lagre, prøv igjen. (${fetchErr.message})`
+              : `Nettverksfeil ved bildeopplasting: ${fetchErr instanceof Error ? fetchErr.message : String(fetchErr)}`;
+          throw new Error(msg);
         }
 
-        if (uploadRes.error) throw uploadRes.error;
+        let body: unknown = null;
+        try { body = await response.json(); } catch {}
+        if (!response.ok) {
+          const firstLine =
+            typeof body === "object" && body && "message" in body
+              ? String((body as { message: unknown }).message ?? "")
+              : "";
+          const status = response.status;
+          let friendly = `HTTP ${status} ved opplasting av bilde.`;
+          if (status === 400) friendly += ` 400 = Feil request, sjekk CORS/headers. ${firstLine}`;
+          else if (status === 401) friendly += ` 401 = Uautorisert (feil API-key/sesjon). ${firstLine}`;
+          else if (status === 403) friendly += ` 403 = NEKTE (Storage RLS Policy / bucket-tilgang — KJØR DEN STØRRE SQLen du fikk! ${firstLine}`;
+          else if (status === 404) friendly += ` 404 = Bucket finnes IKKE (kjør SQL INSERT for bucket). ${firstLine}`;
+          else if (status === 413) friendly += ` 413 = BILDE FOR STORT (over 15MB bucket limit). ${firstLine}`;
+          else if (status === 415) friendly += ` 415 = Feil filtype (ikke tillatt i bucket allowed_mime_types). ${firstLine}`;
+          else friendly += ` Feilmelding fra backend: ${firstLine}`;
+          throw new Error(friendly);
+        }
+
         uploadedPaths.push(objectPath);
       }
 
       const firstImagePath = uploadedPaths[0] ?? null;
       const imageUrl =
-        firstImagePath && supabaseBaseUrl
-          ? `${supabaseBaseUrl}/storage/v1/object/authenticated/varroa-submissions/${firstImagePath}`
+        firstImagePath
+          ? `${supabaseUrl}/storage/v1/object/authenticated/varroa-submissions/${firstImagePath}`
           : null;
 
       step = "Oppretter innsending";
@@ -541,7 +562,16 @@ export default function Home() {
         delete insertPayload.image_notes;
         insertRes = await supabase.from("varroa_submissions").insert(insertPayload);
       }
-      if (insertRes.error) throw insertRes.error;
+      if (insertRes.error) {
+        const rawMsg = insertRes.error.message ?? "";
+        const code = insertRes.error.code ?? "";
+        if (insertRes.error.code === "42501" || rawMsg.toLowerCase().includes("row-level") || rawMsg.includes("policy")) {
+          throw new Error(
+            `RLS policy blokkerer INSERT i varroa_submissions. Kjør SQL for varroa_submissions_insert_anyone (sendt tidligere i dag). Details: ${code} ${rawMsg}`,
+          );
+        }
+        throw new Error(`DB insert feilet: ${code} ${rawMsg}`);
+      }
 
       setLastSubmission({
         id: submissionId,
@@ -556,9 +586,9 @@ export default function Home() {
       });
       setNote("");
     } catch (e) {
-      const friendly = normalizeErrorMessage(e);
-      setLastTech(`${step}: ${friendly}`);
-      setError(`Kunne ikke sende inn (${step}): ${friendly}`);
+      const raw = e instanceof Error ? e.message : String(e);
+      setLastTech(`${step}: ${raw}`);
+      setError(`Kunne ikke sende inn (${step}): ${raw}`);
     } finally {
       setIsSubmitting(false);
     }
