@@ -276,19 +276,59 @@ function ZoomableAnnotatedImage({
 
   // Track SHIFT held on window for "force pan during MARK mode".
   useEffect(() => {
+    const syncShiftFromEvent = (e: { shiftKey?: boolean; getModifierState?: (k: string) => boolean }) => {
+      const fromEvent =
+        typeof e.shiftKey === "boolean"
+          ? e.shiftKey
+          : typeof e.getModifierState === "function"
+            ? e.getModifierState("Shift")
+            : null;
+      if (typeof fromEvent === "boolean") {
+        drawKeysPressed.current.shift = fromEvent;
+      }
+    };
+
+    const cancelAllInteraction = () => {
+      dragState.current = null;
+      pinchState.current = null;
+      clickCandidate.current = null;
+      pointers.current.clear();
+      setDrawing(null);
+    };
+
     const onKeyDown = (e: globalThis.KeyboardEvent) => {
-      if (e.key === "Shift") drawKeysPressed.current.shift = true;
+      syncShiftFromEvent(e);
     };
     const onKeyUp = (e: globalThis.KeyboardEvent) => {
-      if (e.key === "Shift") drawKeysPressed.current.shift = false;
+      const wasShift = drawKeysPressed.current.shift;
+      syncShiftFromEvent(e);
+      if (
+        wasShift &&
+        !drawKeysPressed.current.shift &&
+        mode === "MARK" &&
+        dragState.current != null &&
+        !disabled
+      ) {
+        cancelAllInteraction();
+      }
+    };
+    const onBlur = () => {
+      drawKeysPressed.current.shift = false;
+    };
+    const onFocus = () => {
+      drawKeysPressed.current.shift = false;
     };
     window.addEventListener("keydown", onKeyDown);
     window.addEventListener("keyup", onKeyUp);
+    window.addEventListener("blur", onBlur, true);
+    window.addEventListener("focus", onFocus, true);
     return () => {
       window.removeEventListener("keydown", onKeyDown);
       window.removeEventListener("keyup", onKeyUp);
+      window.removeEventListener("blur", onBlur, true);
+      window.removeEventListener("focus", onFocus, true);
     };
-  }, []);
+  }, [mode, disabled]);
 
   const getImageDisplayRect = () => {
     const img = imgRef.current;
@@ -557,6 +597,9 @@ function ZoomableAnnotatedImage({
   };
 
   const onPointerDown = (e: PointerEvent<HTMLDivElement>) => {
+    if (typeof e.shiftKey === "boolean") {
+      drawKeysPressed.current.shift = e.shiftKey;
+    }
     const target = e.currentTarget;
     target.setPointerCapture(e.pointerId);
     pointers.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
@@ -640,6 +683,9 @@ function ZoomableAnnotatedImage({
 
   const onPointerMove = (e: PointerEvent<HTMLDivElement>) => {
     if (!pointers.current.has(e.pointerId)) return;
+    if (typeof e.shiftKey === "boolean") {
+      drawKeysPressed.current.shift = e.shiftKey;
+    }
     pointers.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
 
     if (pinchState.current && pointers.current.size === 2) {
