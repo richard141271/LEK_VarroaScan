@@ -210,6 +210,7 @@ function ZoomableAnnotatedImage({
 }) {
   const MIN_SCALE = 1;
   const MAX_SCALE = 10;
+  const DEFAULT_CLICK_BOX_SIZE = 0.028;
 
   const containerRef = useRef<HTMLDivElement | null>(null);
   const imgRef = useRef<HTMLImageElement | null>(null);
@@ -579,6 +580,27 @@ function ZoomableAnnotatedImage({
         dragState.current = null;
         return;
       }
+      if (cand.type === "draw") {
+        setDrawing(null);
+        const norm = clientToNormalized(cand.x, cand.y);
+        if (norm) {
+          const half = DEFAULT_CLICK_BOX_SIZE / 2;
+          const cx = Math.max(half, Math.min(1 - half, norm.x));
+          const cy = Math.max(half, Math.min(1 - half, norm.y));
+          const id = cryptoRandomId();
+          const next: VarroaBoundingBox = {
+            id,
+            class_name: "varroa_mite",
+            x: cx - half,
+            y: cy - half,
+            w: DEFAULT_CLICK_BOX_SIZE,
+            h: DEFAULT_CLICK_BOX_SIZE,
+          };
+          onBoxesChange([...boxes, next]);
+        }
+        dragState.current = null;
+        return;
+      }
     }
     clickCandidate.current = null;
 
@@ -798,20 +820,20 @@ function ZoomableAnnotatedImage({
               >
                 <div
                   className={[
-                    "absolute inset-0 transition",
+                    "absolute inset-0 bg-transparent transition",
                     hovered && !disabled
-                      ? "border-[3px] border-red-500 bg-red-500/15"
-                      : "border-[2.5px] border-amber-400 bg-amber-400/10",
+                      ? "border-[3px] border-red-500"
+                      : "border-2 border-amber-400",
                   ].join(" ")}
                   style={
                     hovered && !disabled
                       ? {
                           boxShadow:
-                            "0 0 0 1px rgba(0,0,0,0.6) inset, 0 0 18px 1px rgba(239,68,68,0.55)",
+                            "0 0 0 1px rgba(0,0,0,0.55) inset, 0 0 16px 1px rgba(239,68,68,0.55)",
                           cursor: "pointer",
                         }
                       : {
-                          boxShadow: "0 0 0 1px rgba(0,0,0,0.6) inset",
+                          boxShadow: "0 0 0 1px rgba(0,0,0,0.55) inset",
                           cursor: disabled ? "default" : "pointer",
                         }
                   }
@@ -838,7 +860,7 @@ function ZoomableAnnotatedImage({
                   height: px.height,
                 }}
               >
-                <div className="absolute inset-0 border-2 border-dashed border-amber-300 bg-amber-300/20" />
+                <div className="absolute inset-0 border-2 border-dashed border-amber-300 bg-transparent" />
               </div>
             );
           })() : null}
@@ -885,9 +907,10 @@ function ZoomableAnnotatedImage({
       </div>
 
       <div className="mt-2 text-center text-[11px] text-zinc-500">
-        ✏️ Markér-modus: trykk og dra rundt EN midd for å lage en firkant. Klikk på en
-        firkant for å fjerne den. Hold SHIFT for å panorere mens du merker. Mobil: knip to
-        fingre for å zoome, dra med én finger for å tegne.
+        ✏️ Markér-modus: hurtigklikk på en midd → lager en firkant automatisk. Trenger du
+        større boks: hold inne og dra. Klikk på en eksisterende firkant for å fjerne den. Hold
+        SHIFT for å panorere mens du merker. Mobil: knip to fingre for å zoome, tap for å merke,
+        dra for å tegne større.
       </div>
     </div>
   );
