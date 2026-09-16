@@ -210,7 +210,7 @@ function ZoomableAnnotatedImage({
 }) {
   const MIN_SCALE = 1;
   const MAX_SCALE = 10;
-  const DEFAULT_CLICK_BOX_SIZE = 0.028;
+  const DEFAULT_CLICK_BOX_SIZE = 0.018;
 
   const containerRef = useRef<HTMLDivElement | null>(null);
   const imgRef = useRef<HTMLImageElement | null>(null);
@@ -821,22 +821,14 @@ function ZoomableAnnotatedImage({
                 <div
                   className={[
                     "absolute inset-0 bg-transparent transition",
-                    hovered && !disabled
-                      ? "border-[3px] border-red-500"
-                      : "border-2 border-amber-400",
+                    hovered && !disabled ? "border-[1.5px] border-red-500" : "border border-amber-400",
                   ].join(" ")}
-                  style={
-                    hovered && !disabled
-                      ? {
-                          boxShadow:
-                            "0 0 0 1px rgba(0,0,0,0.55) inset, 0 0 16px 1px rgba(239,68,68,0.55)",
-                          cursor: "pointer",
-                        }
-                      : {
-                          boxShadow: "0 0 0 1px rgba(0,0,0,0.55) inset",
-                          cursor: disabled ? "default" : "pointer",
-                        }
-                  }
+                  style={{
+                    cursor: disabled ? "default" : "pointer",
+                    ...(hovered && !disabled
+                      ? { boxShadow: "0 0 0 1px rgba(250,204,21,0.25) inset, 0 0 14px 1px rgba(239,68,68,0.5)" }
+                      : {}),
+                  }}
                 />
               </div>
             );
@@ -860,7 +852,7 @@ function ZoomableAnnotatedImage({
                   height: px.height,
                 }}
               >
-                <div className="absolute inset-0 border-2 border-dashed border-amber-300 bg-transparent" />
+                <div className="absolute inset-0 border border-dashed border-amber-400 bg-transparent" />
               </div>
             );
           })() : null}
