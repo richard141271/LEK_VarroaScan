@@ -210,7 +210,7 @@ function ZoomableAnnotatedImage({
 }) {
   const MIN_SCALE = 1;
   const MAX_SCALE = 10;
-  const DEFAULT_CLICK_BOX_SIZE = 0.018;
+  const DEFAULT_CLICK_BOX_SIZE = 0.006;
 
   const containerRef = useRef<HTMLDivElement | null>(null);
   const imgRef = useRef<HTMLImageElement | null>(null);
