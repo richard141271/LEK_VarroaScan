@@ -584,17 +584,23 @@ function ZoomableAnnotatedImage({
         setDrawing(null);
         const norm = clientToNormalized(cand.x, cand.y);
         if (norm) {
-          const half = DEFAULT_CLICK_BOX_SIZE / 2;
-          const cx = Math.max(half, Math.min(1 - half, norm.x));
-          const cy = Math.max(half, Math.min(1 - half, norm.y));
+          const iw = Math.max(1, imgRef.current?.naturalWidth ?? 1);
+          const ih = Math.max(1, imgRef.current?.naturalHeight ?? 1);
+          const aspect = iw / Math.max(1, ih);
+          const wNorm = DEFAULT_CLICK_BOX_SIZE;
+          const hNorm = wNorm * Math.max(0.0001, aspect);
+          const hx = wNorm / 2;
+          const hy = hNorm / 2;
+          const cx = Math.max(hx, Math.min(1 - hx, norm.x));
+          const cy = Math.max(hy, Math.min(1 - hy, norm.y));
           const id = cryptoRandomId();
           const next: VarroaBoundingBox = {
             id,
             class_name: "varroa_mite",
-            x: cx - half,
-            y: cy - half,
-            w: DEFAULT_CLICK_BOX_SIZE,
-            h: DEFAULT_CLICK_BOX_SIZE,
+            x: cx - hx,
+            y: cy - hy,
+            w: wNorm,
+            h: hNorm,
           };
           onBoxesChange([...boxes, next]);
         }
