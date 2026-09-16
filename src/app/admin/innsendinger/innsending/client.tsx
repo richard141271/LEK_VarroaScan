@@ -214,6 +214,8 @@ function ZoomableAnnotatedImage({
 
   const containerRef = useRef<HTMLDivElement | null>(null);
   const imgRef = useRef<HTMLImageElement | null>(null);
+  const imageDataRef = useRef<ImageData | null>(null);
+  const cachedSizeRef = useRef<{ w: number; h: number } | null>(null);
 
   const [scale, setScale] = useState(1);
   const [tx, setTx] = useState(0);
@@ -237,6 +239,8 @@ function ZoomableAnnotatedImage({
     setTx(0);
     setTy(0);
     setDrawing(null);
+    imageDataRef.current = null;
+    cachedSizeRef.current = null;
   }, [src]);
 
   const pointers = useRef<Map<number, { x: number; y: number }>>(new Map());
@@ -297,6 +301,169 @@ function ZoomableAnnotatedImage({
       imgTop: top,
       imgWidth: iWidth,
       imgHeight: iHeight,
+    };
+  };
+
+  const handleImageLoad = () => {
+    const img = imgRef.current;
+    if (!img) return;
+    const iw = img.naturalWidth;
+    const ih = img.naturalHeight;
+    if (iw <= 0 || ih <= 0) return;
+    try {
+      const canvas = document.createElement("canvas");
+      canvas.width = iw;
+      canvas.height = ih;
+      const ctx = canvas.getContext("2d");
+      if (!ctx) return;
+      ctx.drawImage(img, 0, 0, iw, ih);
+      try {
+        const data = ctx.getImageData(0, 0, iw, ih);
+        imageDataRef.current = data;
+        cachedSizeRef.current = { w: iw, h: ih };
+      } catch {
+        imageDataRef.current = null;
+        cachedSizeRef.current = null;
+      }
+    } catch {
+      // Ignore tainted canvas / CORS etc – fall back to default size boxes
+    }
+  };
+
+  const detectMiteBBox = (
+    normX: number,
+    normY: number,
+  ): { x: number; y: number; w: number; h: number } | null => {
+    const id = imageDataRef.current;
+    const sz = cachedSizeRef.current;
+    if (!id || !sz) return null;
+    const iw = sz.w;
+    const ih = sz.h;
+    const data = id.data;
+    const LUM_THRESHOLD = 140;
+    const isDark = (px: number, py: number) => {
+      if (px < 0 || py < 0 || px >= iw || py >= ih) return false;
+      const off = (py * iw + px) * 4;
+      const r = data[off];
+      const g = data[off + 1];
+      const b = data[off + 2];
+      const lum = 0.299 * r + 0.587 * g + 0.114 * b;
+      return lum < LUM_THRESHOLD;
+    };
+
+    let cx = Math.round(normX * iw);
+    let cy = Math.round(normY * ih);
+    cx = Math.max(2, Math.min(iw - 3, cx));
+    cy = Math.max(2, Math.min(ih - 3, cy));
+
+    if (!isDark(cx, cy)) {
+      return null;
+    }
+
+    const MAX_BOX_PX = Math.max(12, Math.round(Math.min(iw, ih) * 0.08));
+    const MIN_BOX_PX = 4;
+
+    let x1 = cx - 1;
+    let y1 = cy - 1;
+    let x2 = cx + 1;
+    let y2 = cy + 1;
+
+    const edgeDarkRatio = (
+      side: "top" | "bottom" | "left" | "right",
+    ): number => {
+      let dark = 0;
+      let total = 0;
+      if (side === "top" || side === "bottom") {
+        const yy = side === "top" ? y1 : y2;
+        const startX = x1;
+        const endX = x2;
+        for (let x = startX; x <= endX; x++) {
+          total++;
+          if (isDark(x, yy)) dark++;
+        }
+      } else {
+        const xx = side === "left" ? x1 : x2;
+        const startY = y1;
+        const endY = y2;
+        for (let y = startY; y <= endY; y++) {
+          total++;
+          if (isDark(xx, y)) dark++;
+        }
+      }
+      return total === 0 ? 0 : dark / total;
+    };
+
+    for (let iter = 0; iter < 80; iter++) {
+      const wCurr = x2 - x1 + 1;
+      const hCurr = y2 - y1 + 1;
+      if (wCurr >= MAX_BOX_PX && hCurr >= MAX_BOX_PX) break;
+      let any = false;
+
+      if (x1 > 0 && wCurr < MAX_BOX_PX) {
+        const before = x1;
+        x1--;
+        const r = edgeDarkRatio("left");
+        if (r < 0.12) {
+          x1 = before;
+        } else {
+          any = true;
+        }
+      }
+      if (x2 < iw - 1 && wCurr < MAX_BOX_PX) {
+        const before = x2;
+        x2++;
+        const r = edgeDarkRatio("right");
+        if (r < 0.12) {
+          x2 = before;
+        } else {
+          any = true;
+        }
+      }
+      if (y1 > 0 && hCurr < MAX_BOX_PX) {
+        const before = y1;
+        y1--;
+        const r = edgeDarkRatio("top");
+        if (r < 0.12) {
+          y1 = before;
+        } else {
+          any = true;
+        }
+      }
+      if (y2 < ih - 1 && hCurr < MAX_BOX_PX) {
+        const before = y2;
+        y2++;
+        const r = edgeDarkRatio("bottom");
+        if (r < 0.12) {
+          y2 = before;
+        } else {
+          any = true;
+        }
+      }
+      if (!any) break;
+    }
+
+    let wPx = x2 - x1 + 1;
+    let hPx = y2 - y1 + 1;
+
+    if (wPx < MIN_BOX_PX || hPx < MIN_BOX_PX) {
+      return null;
+    }
+
+    // Add padding margin around detected box (15% each side)
+    const mW = Math.max(2, Math.round(wPx * 0.15));
+    const mH = Math.max(2, Math.round(hPx * 0.15));
+    x1 = Math.max(0, x1 - mW);
+    y1 = Math.max(0, y1 - mH);
+    x2 = Math.min(iw - 1, x2 + mW);
+    y2 = Math.min(ih - 1, y2 + mH);
+    wPx = x2 - x1 + 1;
+    hPx = y2 - y1 + 1;
+
+    return {
+      x: x1 / iw,
+      y: y1 / ih,
+      w: wPx / iw,
+      h: hPx / ih,
     };
   };
 
@@ -584,25 +751,42 @@ function ZoomableAnnotatedImage({
         setDrawing(null);
         const norm = clientToNormalized(cand.x, cand.y);
         if (norm) {
-          const iw = Math.max(1, imgRef.current?.naturalWidth ?? 1);
-          const ih = Math.max(1, imgRef.current?.naturalHeight ?? 1);
-          const aspect = iw / Math.max(1, ih);
-          const wNorm = DEFAULT_CLICK_BOX_SIZE;
-          const hNorm = wNorm * Math.max(0.0001, aspect);
-          const hx = wNorm / 2;
-          const hy = hNorm / 2;
-          const cx = Math.max(hx, Math.min(1 - hx, norm.x));
-          const cy = Math.max(hy, Math.min(1 - hy, norm.y));
-          const id = cryptoRandomId();
-          const next: VarroaBoundingBox = {
-            id,
-            class_name: "varroa_mite",
-            x: cx - hx,
-            y: cy - hy,
-            w: wNorm,
-            h: hNorm,
-          };
-          onBoxesChange([...boxes, next]);
+          let rect: { x: number; y: number; w: number; h: number } | null = null;
+          const detected = detectMiteBBox(norm.x, norm.y);
+          if (detected) {
+            rect = detected;
+          } else {
+            const iw = Math.max(1, imgRef.current?.naturalWidth ?? 1);
+            const ih = Math.max(1, imgRef.current?.naturalHeight ?? 1);
+            const aspect = iw / Math.max(1, ih);
+            const wNorm = DEFAULT_CLICK_BOX_SIZE;
+            const hNorm = wNorm * Math.max(0.0001, aspect);
+            const hx = wNorm / 2;
+            const hy = hNorm / 2;
+            const cx = Math.max(hx, Math.min(1 - hx, norm.x));
+            const cy = Math.max(hy, Math.min(1 - hy, norm.y));
+            rect = { x: cx - hx, y: cy - hy, w: wNorm, h: hNorm };
+          }
+          if (rect && rect.w > 0.0001 && rect.h > 0.0001) {
+            const rx1 = Math.max(0, rect.x);
+            const ry1 = Math.max(0, rect.y);
+            const rx2 = Math.min(1, rect.x + rect.w);
+            const ry2 = Math.min(1, rect.y + rect.h);
+            const w = rx2 - rx1;
+            const h = ry2 - ry1;
+            if (w > 0.0001 && h > 0.0001) {
+              const id = cryptoRandomId();
+              const next: VarroaBoundingBox = {
+                id,
+                class_name: "varroa_mite",
+                x: rx1,
+                y: ry1,
+                w,
+                h,
+              };
+              onBoxesChange([...boxes, next]);
+            }
+          }
         }
         dragState.current = null;
         return;
@@ -795,6 +979,7 @@ function ZoomableAnnotatedImage({
             src={src}
             alt={alt}
             draggable={false}
+            onLoad={handleImageLoad}
             className="h-auto max-h-full w-auto max-w-full object-contain select-none"
           />
 
