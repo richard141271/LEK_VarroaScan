@@ -210,12 +210,18 @@ function ZoomableAnnotatedImage({
 }) {
   const MIN_SCALE = 1;
   const MAX_SCALE = 10;
-  const DEFAULT_CLICK_BOX_SIZE = 0.006;
+  const DEFAULT_CLICK_BOX_SIZE = 0.010;
 
   const containerRef = useRef<HTMLDivElement | null>(null);
   const imgRef = useRef<HTMLImageElement | null>(null);
   const imageDataRef = useRef<ImageData | null>(null);
   const cachedSizeRef = useRef<{ w: number; h: number } | null>(null);
+  const visitedGenRef = useRef<{
+    array: Int32Array;
+    gen: number;
+    w: number;
+    h: number;
+  } | null>(null);
 
   const [scale, setScale] = useState(1);
   const [tx, setTx] = useState(0);
@@ -241,6 +247,7 @@ function ZoomableAnnotatedImage({
     setDrawing(null);
     imageDataRef.current = null;
     cachedSizeRef.current = null;
+    visitedGenRef.current = null;
   }, [src]);
 
   const pointers = useRef<Map<number, { x: number; y: number }>>(new Map());
@@ -340,7 +347,7 @@ function ZoomableAnnotatedImage({
     const iw = sz.w;
     const ih = sz.h;
     const data = id.data;
-    const LUM_THRESHOLD = 140;
+    const LUM_THRESHOLD = 160;
     const isDark = (px: number, py: number) => {
       if (px < 0 || py < 0 || px >= iw || py >= ih) return false;
       const off = (py * iw + px) * 4;
@@ -356,102 +363,68 @@ function ZoomableAnnotatedImage({
     cx = Math.max(2, Math.min(iw - 3, cx));
     cy = Math.max(2, Math.min(ih - 3, cy));
 
+    const MAX_REGION = Math.max(2500, Math.round((iw * ih) / 400));
+
     if (!isDark(cx, cy)) {
       return null;
     }
 
-    const MAX_BOX_PX = Math.max(12, Math.round(Math.min(iw, ih) * 0.08));
-    const MIN_BOX_PX = 4;
+    let v = visitedGenRef.current;
+    if (!v || v.w !== iw || v.h !== ih) {
+      v = { w: iw, h: ih, array: new Int32Array(iw * ih), gen: 0 };
+      visitedGenRef.current = v;
+    }
+    v.gen = (v.gen + 1) | 0;
+    const gen = v.gen;
+    const visited = v.array;
 
-    let x1 = cx - 1;
-    let y1 = cy - 1;
-    let x2 = cx + 1;
-    let y2 = cy + 1;
+    const stack: number[] = [];
+    const idx0 = cy * iw + cx;
+    stack.push(idx0);
+    visited[idx0] = gen;
 
-    const edgeDarkRatio = (
-      side: "top" | "bottom" | "left" | "right",
-    ): number => {
-      let dark = 0;
-      let total = 0;
-      if (side === "top" || side === "bottom") {
-        const yy = side === "top" ? y1 : y2;
-        const startX = x1;
-        const endX = x2;
-        for (let x = startX; x <= endX; x++) {
-          total++;
-          if (isDark(x, yy)) dark++;
-        }
-      } else {
-        const xx = side === "left" ? x1 : x2;
-        const startY = y1;
-        const endY = y2;
-        for (let y = startY; y <= endY; y++) {
-          total++;
-          if (isDark(xx, y)) dark++;
-        }
-      }
-      return total === 0 ? 0 : dark / total;
-    };
+    let x1 = cx;
+    let y1 = cy;
+    let x2 = cx;
+    let y2 = cy;
+    let count = 0;
 
-    for (let iter = 0; iter < 80; iter++) {
-      const wCurr = x2 - x1 + 1;
-      const hCurr = y2 - y1 + 1;
-      if (wCurr >= MAX_BOX_PX && hCurr >= MAX_BOX_PX) break;
-      let any = false;
+    while (stack.length > 0 && count < MAX_REGION) {
+      const idx = stack.pop()!;
+      const px = idx % iw;
+      const py = (idx - px) / iw;
+      if (px < x1) x1 = px;
+      if (py < y1) y1 = py;
+      if (px > x2) x2 = px;
+      if (py > y2) y2 = py;
+      count++;
 
-      if (x1 > 0 && wCurr < MAX_BOX_PX) {
-        const before = x1;
-        x1--;
-        const r = edgeDarkRatio("left");
-        if (r < 0.12) {
-          x1 = before;
-        } else {
-          any = true;
+      for (let dy = -1; dy <= 1; dy++) {
+        for (let dx = -1; dx <= 1; dx++) {
+          if (dx === 0 && dy === 0) continue;
+          const nx = px + dx;
+          const ny = py + dy;
+          if (nx < 0 || ny < 0 || nx >= iw || ny >= ih) continue;
+          const nIdx = ny * iw + nx;
+          if (visited[nIdx] === gen) continue;
+          visited[nIdx] = gen;
+          if (isDark(nx, ny)) {
+            stack.push(nIdx);
+          }
         }
       }
-      if (x2 < iw - 1 && wCurr < MAX_BOX_PX) {
-        const before = x2;
-        x2++;
-        const r = edgeDarkRatio("right");
-        if (r < 0.12) {
-          x2 = before;
-        } else {
-          any = true;
-        }
-      }
-      if (y1 > 0 && hCurr < MAX_BOX_PX) {
-        const before = y1;
-        y1--;
-        const r = edgeDarkRatio("top");
-        if (r < 0.12) {
-          y1 = before;
-        } else {
-          any = true;
-        }
-      }
-      if (y2 < ih - 1 && hCurr < MAX_BOX_PX) {
-        const before = y2;
-        y2++;
-        const r = edgeDarkRatio("bottom");
-        if (r < 0.12) {
-          y2 = before;
-        } else {
-          any = true;
-        }
-      }
-      if (!any) break;
     }
 
     let wPx = x2 - x1 + 1;
     let hPx = y2 - y1 + 1;
 
+    const MIN_BOX_PX = 6;
     if (wPx < MIN_BOX_PX || hPx < MIN_BOX_PX) {
       return null;
     }
 
-    // Add padding margin around detected box (15% each side)
-    const mW = Math.max(2, Math.round(wPx * 0.15));
-    const mH = Math.max(2, Math.round(hPx * 0.15));
+    const mW = Math.max(3, Math.round(wPx * 0.35));
+    const mH = Math.max(3, Math.round(hPx * 0.35));
     x1 = Math.max(0, x1 - mW);
     y1 = Math.max(0, y1 - mH);
     x2 = Math.min(iw - 1, x2 + mW);
