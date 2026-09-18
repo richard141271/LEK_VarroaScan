@@ -928,6 +928,11 @@ export default function AdminInboxPage() {
                   E-post
                 </label>
                 <input
+                  name="email"
+                  autoComplete="email"
+                  autoCapitalize="none"
+                  autoCorrect="off"
+                  spellCheck={false}
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
                   type="email"
@@ -958,6 +963,8 @@ export default function AdminInboxPage() {
                     Passord
                   </label>
                   <input
+                    name={authMode === "register" || authMode === "recovery" ? "new-password" : "password"}
+                    autoComplete={authMode === "register" || authMode === "recovery" ? "new-password" : "current-password"}
                     value={password}
                     onChange={(e) => setPassword(e.target.value)}
                     type="password"
@@ -986,6 +993,8 @@ export default function AdminInboxPage() {
                     Gjenta passord
                   </label>
                   <input
+                    name="confirm-password"
+                    autoComplete={authMode === "recovery" ? "new-password" : "new-password"}
                     value={confirmPassword}
                     onChange={(e) => setConfirmPassword(e.target.value)}
                     type="password"
