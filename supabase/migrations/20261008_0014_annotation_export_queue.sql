@@ -27,13 +27,7 @@ CREATE POLICY "varroa_export_queue_admin_select"
   ON public.varroa_annotation_export_queue
   FOR SELECT
   USING (
-    EXISTS (
-      SELECT 1
-      FROM public.varroa_user_roles r
-      WHERE r.user_id = auth.uid()
-        AND r.role IN ('SUPERADMIN'::text, 'FAGANSVARLIG'::text)
-        AND r.deleted_at IS NULL
-    )
+    public.varroa_role_for_user(auth.uid()) IN ('SUPERADMIN'::text, 'FAGANSVARLIG'::text)
   );
 
 -- Only admins can insert new rows (to approve for export).
@@ -42,13 +36,7 @@ CREATE POLICY "varroa_export_queue_admin_insert"
   ON public.varroa_annotation_export_queue
   FOR INSERT
   WITH CHECK (
-    EXISTS (
-      SELECT 1
-      FROM public.varroa_user_roles r
-      WHERE r.user_id = auth.uid()
-        AND r.role IN ('SUPERADMIN'::text, 'FAGANSVARLIG'::text)
-        AND r.deleted_at IS NULL
-    )
+    public.varroa_role_for_user(auth.uid()) IN ('SUPERADMIN'::text, 'FAGANSVARLIG'::text)
     AND (approved_by_admin_id = auth.uid())
   );
 
@@ -58,22 +46,10 @@ CREATE POLICY "varroa_export_queue_admin_update"
   ON public.varroa_annotation_export_queue
   FOR UPDATE
   USING (
-    EXISTS (
-      SELECT 1
-      FROM public.varroa_user_roles r
-      WHERE r.user_id = auth.uid()
-        AND r.role IN ('SUPERADMIN'::text, 'FAGANSVARLIG'::text)
-        AND r.deleted_at IS NULL
-    )
+    public.varroa_role_for_user(auth.uid()) IN ('SUPERADMIN'::text, 'FAGANSVARLIG'::text)
   )
   WITH CHECK (
-    EXISTS (
-      SELECT 1
-      FROM public.varroa_user_roles r
-      WHERE r.user_id = auth.uid()
-        AND r.role IN ('SUPERADMIN'::text, 'FAGANSVARLIG'::text)
-        AND r.deleted_at IS NULL
-    )
+    public.varroa_role_for_user(auth.uid()) IN ('SUPERADMIN'::text, 'FAGANSVARLIG'::text)
   );
 
 -- Grant base privileges to authenticated (RLS policies above will restrict them).
