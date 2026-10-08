@@ -259,22 +259,61 @@ Deno.serve(async (req: Request) => {
 
       // Defensive prediction extraction: try multiple known Roboflow output shapes
       const predArrays: unknown[] = [];
+      let imageWidth: number | null = null;
+      let imageHeight: number | null = null;
       if (roboResp && typeof roboResp === "object") {
         const rObj = roboResp as Record<string, unknown>;
         if (Array.isArray(rObj.predictions)) predArrays.push(rObj.predictions);
-        if (Array.isArray(rObj.data?.predictions)) predArrays.push((rObj.data as Record<string, unknown>).predictions);
-        const outputs = rObj.outputs;
-        if (outputs && typeof outputs === "object") {
-          const o = outputs as Record<string, unknown>;
-          for (const k of Object.keys(o)) {
-            const v = (o as Record<string, unknown>)[k];
-            if (v && typeof v === "object") {
-              const vo = v as Record<string, unknown>;
-              if (Array.isArray(vo.predictions)) predArrays.push(vo.predictions);
-              if (Array.isArray(vo.detections)) predArrays.push(vo.detections);
-            }
-            if (Array.isArray(v)) predArrays.push(v);
+        if (
+          rObj.predictions &&
+          typeof rObj.predictions === "object" &&
+          Array.isArray((rObj.predictions as Record<string, unknown>).predictions)
+        ) {
+          predArrays.push((rObj.predictions as Record<string, unknown>).predictions);
+          const im = (rObj.predictions as Record<string, unknown>).image;
+          if (im && typeof im === "object") {
+            const w = (im as Record<string, unknown>).width;
+            const h = (im as Record<string, unknown>).height;
+            if (typeof w === "number") imageWidth = w;
+            if (typeof h === "number") imageHeight = h;
           }
+        }
+        if (Array.isArray(rObj.data?.predictions)) predArrays.push((rObj.data as Record<string, unknown>).predictions);
+        if (
+          rObj.data &&
+          typeof rObj.data === "object" &&
+          (rObj.data as Record<string, unknown>).predictions &&
+          typeof (rObj.data as Record<string, unknown>).predictions === "object" &&
+          Array.isArray(((rObj.data as Record<string, unknown>).predictions as Record<string, unknown>).predictions)
+        ) {
+          predArrays.push((((rObj.data as Record<string, unknown>).predictions as Record<string, unknown>).predictions));
+        }
+        const outputs = rObj.outputs;
+        const pushOutput = (v: unknown) => {
+          if (v && typeof v === "object") {
+            const vo = v as Record<string, unknown>;
+            if (Array.isArray(vo.predictions)) predArrays.push(vo.predictions);
+            if (Array.isArray(vo.detections)) predArrays.push(vo.detections);
+            // Nested: vo.predictions = { image: {width,height}, predictions: [...] }
+            if (vo.predictions && typeof vo.predictions === "object") {
+              const vp = vo.predictions as Record<string, unknown>;
+              if (Array.isArray(vp.predictions)) predArrays.push(vp.predictions);
+              const im = vp.image;
+              if (im && typeof im === "object" && imageWidth == null && imageHeight == null) {
+                const w = (im as Record<string, unknown>).width;
+                const h = (im as Record<string, unknown>).height;
+                if (typeof w === "number") imageWidth = w;
+                if (typeof h === "number") imageHeight = h;
+              }
+            }
+          }
+          if (Array.isArray(v)) predArrays.push(v);
+        };
+        if (Array.isArray(outputs)) {
+          for (const v of outputs) pushOutput(v);
+        } else if (outputs && typeof outputs === "object") {
+          const o = outputs as Record<string, unknown>;
+          for (const k of Object.keys(o)) pushOutput((o as Record<string, unknown>)[k]);
         }
         if (Array.isArray(rObj.detections)) predArrays.push(rObj.detections);
       }
@@ -343,18 +382,29 @@ Deno.serve(async (req: Request) => {
         if (![finalX, finalY, finalW, finalH].every(Number.isFinite)) continue;
         if (finalW <= 0 || finalH <= 0) continue;
 
-        // If any coordinate clearly exceeds 1 (pixels), we can't reliably normalize here
-        // because we don't know the image dimensions. Clamp into [0,1] range as a best-effort.
-        const maxExtent = Math.max(finalX + finalW, finalY + finalH, finalX, finalY, finalW, finalH);
-        if (maxExtent > 1.1) {
-          // Looks like pixels. Best effort: if width/height are within [0,1] then only x/y were
-          // in pixels. We don't have the dims, so divide each by maxExtent*1.1 to bring into 0..1.
-          // This will be wrong but admin can fix. Better than boxes that are 1000x outside canvas.
-          const den = Math.max(2, maxExtent);
-          finalX = finalX / den;
-          finalY = finalY / den;
-          finalW = finalW / den;
-          finalH = finalH / den;
+        // If we know the original image dimensions from Roboflow output, use them to normalize
+        // pixel coordinates (x,y,w,h) → [0,1] exactly.
+        const hasKnownDims = typeof imageWidth === "number" && typeof imageHeight === "number" &&
+          imageWidth > 10 && imageHeight > 10;
+
+        // Determine if current coords are in pixels (value > ~2 typically signals pixels since 1.0 = full width)
+        const coordsLookLikePixels = finalW > 1.01 || finalH > 1.01 || finalX > 1.01 || finalY > 1.01;
+
+        if (hasKnownDims && coordsLookLikePixels) {
+          finalX = finalX / (imageWidth as number);
+          finalY = finalY / (imageHeight as number);
+          finalW = finalW / (imageWidth as number);
+          finalH = finalH / (imageHeight as number);
+        } else {
+          // Fallback: if any coordinate clearly exceeds 1 (pixels) but dims unknown, clamp into [0,1].
+          const maxExtent = Math.max(finalX + finalW, finalY + finalH, finalX, finalY, finalW, finalH);
+          if (maxExtent > 1.1) {
+            const den = Math.max(2, maxExtent);
+            finalX = finalX / den;
+            finalY = finalY / den;
+            finalW = finalW / den;
+            finalH = finalH / den;
+          }
         }
         finalX = Math.max(0, Math.min(1, finalX));
         finalY = Math.max(0, Math.min(1, finalY));
