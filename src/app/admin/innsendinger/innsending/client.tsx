@@ -31,6 +31,12 @@ import {
   type VarroaSubmissionRecord,
   type VarroaSubmissionReview,
 } from "@/lib/varroaWorkflow";
+import {
+  type VarroaBoundingBox,
+  getConfidenceLevel,
+  coerceImageNotes,
+  type ImageNote,
+} from "@/lib/varroaTypes";
 
 type SaveAction =
   | "SAVE_DRAFT"
@@ -60,26 +66,8 @@ function getActionButtonLabel(action: SaveAction) {
   }
 }
 
-/**
- * Bounding box for a detected varroa mite.
- * Coordinates are NORMALIZED to the source image (0..1 range), so the dataset
- * is independent of image resolution and ready for Roboflow / YOLO export.
- *
- *  x = left edge   (0 = leftmost pixel in source image, 1 = rightmost)
- *  y = top edge    (0 = top,            1 = bottom)
- *  w = width of the box, expressed as fraction of source image width
- *  h = height of the box, expressed as fraction of source image height
- *
- * Roboflow Pascal VOC / YOLO conversion is straightforward from this shape.
- */
-export type VarroaBoundingBox = {
-  id: string;
-  class_name: "varroa_mite";
-  x: number; // 0..1, left
-  y: number; // 0..1, top
-  w: number; // 0..1, width
-  h: number; // 0..1, height
-};
+// VarroaBoundingBox imported from @/lib/varroaTypes (shared with beekeeper page + edge functions)
+// Confidence field (0..1) is set on AI-predicted boxes; undefined = manual admin box.
 
 type ImageReviewDraft = {
   id?: string;
@@ -160,16 +148,69 @@ function cryptoRandomId() {
   return `b_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
 }
 
+/**
+ * Extract ai_annotations_pending[] from legacy/new `image_notes` JSON.
+ * AI-suggested boxes are stored separately from admin-approved annotations[]
+ * so that admin edits can overwrite AI suggestions without losing track of provenance.
+ */
+function extractAIPendingFromImageNotes(
+  imageNotes: unknown,
+  imageIndex: number,
+): VarroaBoundingBox[] {
+  if (!imageNotes || typeof imageNotes !== "object") return [];
+  if (!Array.isArray(imageNotes)) return [];
+  const entry = (imageNotes as unknown[]).find(
+    (e) =>
+      !!e &&
+      typeof e === "object" &&
+      "image_index" in (e as Record<string, unknown>) &&
+      (e as { image_index: number }).image_index === imageIndex,
+  );
+  if (!entry || typeof entry !== "object") return [];
+  const rec = entry as Record<string, unknown>;
+  const raw = rec.ai_annotations_pending;
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .map((b) => {
+      if (!b || typeof b !== "object") return null;
+      const obj = b as Record<string, unknown>;
+      const id = typeof obj.id === "string" ? obj.id : cryptoRandomId();
+      const cn = typeof obj.class_name === "string" ? obj.class_name : "varroa_mite";
+      const x = typeof obj.x === "number" ? obj.x : NaN;
+      const y = typeof obj.y === "number" ? obj.y : NaN;
+      const w = typeof obj.w === "number" ? obj.w : NaN;
+      const h = typeof obj.h === "number" ? obj.h : NaN;
+      if (![x, y, w, h].every(Number.isFinite)) return null;
+      if (w <= 0 || h <= 0) return null;
+      const box: VarroaBoundingBox = {
+        id,
+        class_name: cn === "varroa_mite" ? cn : "varroa_mite",
+        x: Math.max(0, Math.min(1, x)),
+        y: Math.max(0, Math.min(1, y)),
+        w: Math.max(0.0005, Math.min(1, w)),
+        h: Math.max(0.0005, Math.min(1, h)),
+      };
+      if (typeof obj.confidence === "number") {
+        box.confidence = Math.max(0, Math.min(1, obj.confidence));
+      }
+      return box;
+    })
+    .filter((b): b is VarroaBoundingBox => !!b);
+}
+
 function createDraftFromImageReview(
   review: VarroaSubmissionImageReview,
   imageNotes: unknown,
 ): ImageReviewDraft {
   const annotations = extractAnnotationsFromImageNotes(imageNotes, review.image_index);
+  const aiPending = extractAIPendingFromImageNotes(imageNotes, review.image_index);
+  // If admin hasn't added any boxes yet → prefill with AI suggestions (first-time open).
+  // If some boxes already exist, keep them (admin has started working).
+  const finalAnnotations: VarroaBoundingBox[] =
+    annotations.length === 0 && aiPending.length > 0 ? [...aiPending] : annotations;
   const explicitMiteCount = review.mite_count != null ? String(review.mite_count) : "";
-  // If annotations exist (new flow) → use their count as authoritative count.
-  // Otherwise: fall back to whatever explicit count was stored in the row.
   const miteCountInput =
-    annotations.length > 0 ? String(annotations.length) : explicitMiteCount;
+    finalAnnotations.length > 0 ? String(finalAnnotations.length) : explicitMiteCount;
   return {
     id: review.id,
     imageIndex: review.image_index,
@@ -178,7 +219,7 @@ function createDraftFromImageReview(
     comment: review.comment ?? "",
     trainingReady: Boolean(review.training_ready),
     approved: Boolean(review.approved),
-    annotations,
+    annotations: finalAnnotations,
   };
 }
 
@@ -201,12 +242,16 @@ function ZoomableAnnotatedImage({
   boxes,
   onBoxesChange,
   disabled,
+  showConfidence = true,
+  aiBorderStyle = "dashed",
 }: {
   src: string;
   alt: string;
   boxes: VarroaBoundingBox[];
   onBoxesChange: (next: VarroaBoundingBox[]) => void;
   disabled?: boolean;
+  showConfidence?: boolean;
+  aiBorderStyle?: "dashed" | "solid";
 }) {
   const MIN_SCALE = 1;
   const MAX_SCALE = 10;
@@ -1006,6 +1051,26 @@ function ZoomableAnnotatedImage({
             const px = normalizedToCssPx(b);
             if (!px) return null;
             const hovered = hoveredBoxId === b.id;
+            const isAI = b.confidence != null && Number.isFinite(b.confidence);
+            const confLevel = isAI ? getConfidenceLevel(b.confidence) : null;
+            let borderColorClass = "border-amber-400";
+            let borderKindClass = "border-solid";
+            let badgeClass = "bg-amber-500 text-zinc-950";
+            if (isAI) {
+              borderKindClass = aiBorderStyle === "dashed" ? "border-dashed" : "border-solid";
+              if (confLevel === "high") {
+                borderColorClass = "border-emerald-400";
+                badgeClass = "bg-emerald-500 text-white";
+              } else if (confLevel === "medium") {
+                borderColorClass = "border-amber-400";
+                badgeClass = "bg-amber-400 text-zinc-950";
+              } else {
+                borderColorClass = "border-red-400";
+                badgeClass = "bg-red-500 text-white";
+              }
+            }
+            const hoverClass =
+              hovered && !disabled ? "border-[1.5px] border-red-500" : `border ${borderKindClass} ${borderColorClass}`;
             return (
               <div
                 key={b.id}
@@ -1031,7 +1096,7 @@ function ZoomableAnnotatedImage({
                 <div
                   className={[
                     "absolute inset-0 bg-transparent transition",
-                    hovered && !disabled ? "border-[1.5px] border-red-500" : "border border-amber-400",
+                    hoverClass,
                   ].join(" ")}
                   style={{
                     cursor: disabled ? "default" : "pointer",
@@ -1040,6 +1105,17 @@ function ZoomableAnnotatedImage({
                       : {}),
                   }}
                 />
+                {showConfidence && isAI && b.confidence != null ? (
+                  <div
+                    className={[
+                      "absolute -top-6 left-0 rounded-md px-1.5 py-0.5 text-[10px] font-bold leading-none",
+                      badgeClass,
+                    ].join(" ")}
+                    style={{ whiteSpace: "nowrap" }}
+                  >
+                    {Math.round(b.confidence * 100)}%
+                  </div>
+                ) : null}
               </div>
             );
           })}
@@ -1159,6 +1235,9 @@ export function ProductionSubmissionClient() {
   const [saveError, setSaveError] = useState<string | null>(null);
   const [saveOk, setSaveOk] = useState<string | null>(null);
   const [isSaving, setIsSaving] = useState(false);
+  const [showConfidence, setShowConfidence] = useState(true);
+  const [exportToast, setExportToast] = useState<{ kind: "ok" | "err"; text: string } | null>(null);
+  const initialAnnotationsRef = useRef<Record<number, VarroaBoundingBox[] | null>>({});
   const totalImages = images.length;
   const isLastImage = totalImages === 0 || selectedImage >= totalImages - 1;
   const currentDraft = imageDrafts[selectedImage] ?? createEmptyImageDraft(selectedImage);
@@ -1321,6 +1400,14 @@ export function ProductionSubmissionClient() {
           annotations,
         };
       }
+      // Snapshot initial annotations (deep-ish copy) so we can detect changes later
+      // when deciding whether "Send to Roboflow training" has corrections to submit.
+      const snap: Record<number, VarroaBoundingBox[] | null> = {};
+      for (let idx = 0; idx < signedImages.length; idx += 1) {
+        const d = nextDrafts[idx];
+        snap[idx] = d?.annotations ? d.annotations.map((a) => ({ ...a })) : null;
+      }
+      initialAnnotationsRef.current = snap;
       setImageDrafts(nextDrafts);
     } catch (e) {
       const message =
@@ -1383,6 +1470,151 @@ export function ProductionSubmissionClient() {
   const handleAnnotationsChange = (next: VarroaBoundingBox[]) => {
     updateCurrentDraft({ annotations: next });
   };
+
+  const rerunAIOnCurrentSubmission = useCallback(async () => {
+    if (!item || !supabase || !access?.userId) return;
+    setExportToast({ kind: "ok", text: "AI starter på nytt. Vent 30–60 sekunder og last siden på nytt." });
+    window.setTimeout(() => setExportToast(null), 5000);
+    try {
+      const sbUrl = process.env.NEXT_PUBLIC_SUPABASE_URL?.replace(/\/$/, "") ?? "";
+      const anonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ?? "";
+      const { data } = await supabase.auth.getSession();
+      const jwtMaybe = data.session?.access_token ?? anonKey;
+      const headers: Record<string, string> = {
+        "Content-Type": "application/json",
+        apikey: anonKey,
+      };
+      if (jwtMaybe && jwtMaybe !== anonKey) headers.Authorization = `Bearer ${jwtMaybe}`;
+      const res = await fetch(`${sbUrl}/functions/v1/varroa-infer`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ submission_id: item.id, signed_images: [] }),
+      });
+      if (!res.ok) {
+        console.warn("rerun ai non-2xx", res.status, res.statusText);
+      }
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      setExportToast({ kind: "err", text: `Kunne ikke starte AI på nytt: ${msg}` });
+      window.setTimeout(() => setExportToast(null), 8000);
+    }
+  }, [item, supabase, access?.userId]);
+
+  const detectAnnotationChanges = useCallback(
+    (idx: number): boolean => {
+      const initial = initialAnnotationsRef.current[idx];
+      const now = imageDrafts[idx]?.annotations ?? [];
+      if (!initial) return now.length > 0;
+      if (initial.length !== now.length) return true;
+      const byId = new Map<string, VarroaBoundingBox>();
+      for (const b of initial) byId.set(b.id, b);
+      for (const b of now) {
+        const a = byId.get(b.id);
+        if (!a) return true;
+        const EPS = 0.001;
+        if (
+          Math.abs(a.x - b.x) > EPS ||
+          Math.abs(a.y - b.y) > EPS ||
+          Math.abs(a.w - b.w) > EPS ||
+          Math.abs(a.h - b.h) > EPS
+        ) {
+          return true;
+        }
+        byId.delete(b.id);
+      }
+      if (byId.size > 0) return true;
+      return false;
+    },
+    [imageDrafts],
+  );
+
+  const sendCurrentImageToTraining = useCallback(async () => {
+    if (!item || !supabase || !access?.userId) return;
+    const idx = selectedImage;
+    const annotations = currentDraft.annotations ?? [];
+    if (annotations.length === 0) {
+      const ok = window.confirm(
+        "Ingen merking (midd-bokser) på dette bildet. Uten annoteringer lærer modellen ingenting. Er du sikker på at du vil sende bildet likevel?",
+      );
+      if (!ok) return;
+    } else {
+      const changed = detectAnnotationChanges(idx);
+      if (!changed) {
+        const ok = window.confirm(
+          "Ingen korreksjoner gjort (AI-boksene er uendret). Hvis du bare sender AI-prediksjoner uten endringer, vil ikke modellen bli bedre. Er du sikker på at du vil sende likevel?",
+        );
+        if (!ok) return;
+      }
+    }
+    // First save draft so the export edge function will see the new annotations
+    // by reading the latest image_notes from DB. If persist fails → abort.
+    try {
+      await persist("SAVE_DRAFT");
+    } catch {
+      // persist() itself sets setSaveError on failure.
+    }
+    setExportToast({ kind: "ok", text: "Sender til Roboflow… vent." });
+    try {
+      // Enqueue row (upsert due to UNIQUE(submission_id, image_index))
+      const { error: queueErr } = await supabase
+        .from("varroa_annotation_export_queue")
+        .upsert(
+          {
+            submission_id: item.id,
+            image_index: idx,
+            status: "PENDING",
+            approved_by_admin_id: access.userId,
+          },
+          {
+            onConflict: "submission_id,image_index",
+            ignoreDuplicates: false,
+          },
+        )
+        .select("id")
+        .maybeSingle();
+      if (queueErr) {
+        throw new Error(
+          `Kunne ikke legge til i export-kø. Har du kjørt den nyeste SQL-migrasjonen? (${queueErr.code ?? ""} ${queueErr.message})`,
+        );
+      }
+
+      // Trigger export function
+      const sbUrl = process.env.NEXT_PUBLIC_SUPABASE_URL?.replace(/\/$/, "") ?? "";
+      const anonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ?? "";
+      const { data: sess } = await supabase.auth.getSession();
+      const jwtMaybe = sess.session?.access_token ?? null;
+      const headers: Record<string, string> = {
+        "Content-Type": "application/json",
+        apikey: anonKey,
+      };
+      if (jwtMaybe) headers.Authorization = `Bearer ${jwtMaybe}`;
+      const res = await fetch(`${sbUrl}/functions/v1/varroa-export-training`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ submission_id: item.id, image_index: idx }),
+      });
+      const text = await res.text();
+      let json: unknown = null;
+      try {
+        json = text ? JSON.parse(text) : null;
+      } catch {
+        json = { raw_text: text };
+      }
+      if (!res.ok) {
+        const msg =
+          json && typeof json === "object" && "error" in json
+            ? String((json as { error?: unknown }).error ?? "")
+            : `HTTP ${res.status} ${res.statusText}`;
+        throw new Error(msg || "Feil under opplasting til Roboflow");
+      }
+      setExportToast({ kind: "ok", text: "Sendt til Roboflow! Bildet og annoteringene er nå i treningsdatasettet." });
+      window.setTimeout(() => setExportToast(null), 8000);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      setExportToast({ kind: "err", text: `Feil: ${msg}` });
+      window.setTimeout(() => setExportToast(null), 12000);
+    }
+  }, [item, supabase, access?.userId, selectedImage, currentDraft.annotations, detectAnnotationChanges]);
 
   const persist = async (action: SaveAction) => {
     setSaveError(null);
@@ -1895,6 +2127,8 @@ export function ProductionSubmissionClient() {
                       boxes={currentDraft.annotations ?? []}
                       onBoxesChange={handleAnnotationsChange}
                       disabled={isArchived || isFinalized || isSaving || isLoading}
+                      showConfidence={showConfidence}
+                      aiBorderStyle="dashed"
                     />
                   ) : (
                     <div className="flex h-[55vh] items-center justify-center text-sm text-zinc-500 xl:h-[70vh]">
@@ -1902,6 +2136,51 @@ export function ProductionSubmissionClient() {
                     </div>
                   )}
                 </div>
+
+                {currentImage ? (
+                  <div className="mt-4 flex flex-wrap items-center gap-2">
+                    <button
+                      type="button"
+                      disabled={isSaving || isArchived || isFinalized || isLoading || !item}
+                      onClick={rerunAIOnCurrentSubmission}
+                      className="h-10 rounded-xl border border-sky-800/60 bg-sky-950/40 px-3 text-xs font-semibold text-sky-100 active:opacity-90 disabled:opacity-50"
+                    >
+                      🧠 Kjør AI-telling på nytt
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setShowConfidence((v) => !v)}
+                      className={[
+                        "h-10 rounded-xl border px-3 text-xs font-semibold active:opacity-90",
+                        showConfidence
+                          ? "border-emerald-700 bg-emerald-950/40 text-emerald-100"
+                          : "border-zinc-700 bg-zinc-950 text-zinc-200",
+                      ].join(" ")}
+                    >
+                      📊 {showConfidence ? "Skjul konfidens-%" : "Vis konfidens-%"}
+                    </button>
+                    <button
+                      type="button"
+                      disabled={isSaving || isArchived || isLoading || !item || !access?.userId}
+                      onClick={sendCurrentImageToTraining}
+                      className="h-10 rounded-xl border border-fuchsia-800/60 bg-fuchsia-950/40 px-3 text-xs font-semibold text-fuchsia-100 active:opacity-90 disabled:opacity-50"
+                    >
+                      🚀 Send til Roboflow trening
+                    </button>
+                    {exportToast ? (
+                      <span
+                        className={[
+                          "ml-auto rounded-full px-3 py-1.5 text-[11px] font-bold",
+                          exportToast.kind === "ok"
+                            ? "border border-emerald-800 bg-emerald-950/60 text-emerald-200"
+                            : "border border-red-900 bg-red-950/60 text-red-200",
+                        ].join(" ")}
+                      >
+                        {exportToast.text}
+                      </span>
+                    ) : null}
+                  </div>
+                ) : null}
 
                 {images.length > 1 ? (
                   <div className="mt-4 grid grid-cols-4 gap-3 xl:grid-cols-6">

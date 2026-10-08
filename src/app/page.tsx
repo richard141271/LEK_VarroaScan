@@ -7,6 +7,13 @@ import { getDeviceInfo } from "@/lib/deviceInfo";
 import { isVarroaAdmin } from "@/lib/varroaAdmin";
 import { getSupabaseClient } from "@/lib/supabaseClient";
 import { useOnlineStatus } from "@/lib/useOnlineStatus";
+import { validateImageQuality, type ImageQualityResult } from "@/lib/imageQuality";
+import {
+  type VarroaBoundingBox,
+  type ImageNote,
+  coerceImageNotes,
+  getMiteCountCategory,
+} from "@/lib/varroaTypes";
 
 type SubmissionType = "BUNNBRETT_FOTO" | "KONTROLLFOTO";
 
@@ -19,6 +26,8 @@ type LocalImage = {
   previewUrl: string;
   note: string;
   noteOpen: boolean;
+  quality?: ImageQualityResult["quality"] | null;
+  qualityPassedForced?: boolean; // true if user accepted "send anyway" after warning
 };
 
 function formatBytes(bytes: number) {
@@ -206,7 +215,23 @@ export default function Home() {
     type: SubmissionType;
     note: string | null;
     imagesCount: number;
+    signedUrls?: { path: string; url: string }[];
   } | null>(null);
+  type AIPollState = {
+    status: "PENDING" | "RUNNING" | "DONE" | "FAILED" | "TIMEOUT" | "NOT_STARTED";
+    ai_count: number | null;
+    ai_confidence: number | null;
+    ai_error: string | null;
+    imageNotes: ImageNote[];
+  };
+  const [aiPoll, setAiPoll] = useState<AIPollState>({
+    status: "NOT_STARTED",
+    ai_count: null,
+    ai_confidence: null,
+    ai_error: null,
+    imageNotes: [],
+  });
+  const aiPollTimerRef = useRef<number | null>(null);
   const [bottomOverlayPx, setBottomOverlayPx] = useState(0);
   const [showTech, setShowTech] = useState(false);
   const [lastTech, setLastTech] = useState<string | null>(null);
@@ -346,8 +371,82 @@ export default function Home() {
       if (cameraLoopTimerRef.current != null) {
         window.clearTimeout(cameraLoopTimerRef.current);
       }
+      if (aiPollTimerRef.current != null) {
+        window.clearInterval(aiPollTimerRef.current);
+      }
     };
   }, []);
+
+  useEffect(() => {
+    if (!didSubmit || !lastSubmission?.id) return;
+    const submissionId = lastSubmission.id;
+    const supabase = getSupabaseClient();
+    if (!supabase) return;
+    let attempts = 0;
+    const MAX_ATTEMPTS = 30; // 30 * 2s = 60 seconds
+    aiPollTimerRef.current = window.setInterval(async () => {
+      attempts += 1;
+      try {
+        const { data, error } = await supabase
+          .from("varroa_submissions")
+          .select(
+            "id, ai_status, ai_started_at, ai_finished_at, ai_error, ai_count, ai_confidence, ai_result, image_notes, images",
+          )
+          .eq("id", submissionId)
+          .maybeSingle();
+        if (error) {
+          console.warn("poll error", error);
+          return;
+        }
+        if (!data) return;
+        const imageNotes = coerceImageNotes((data as { image_notes: unknown }).image_notes);
+        const st = (data as { ai_status?: string }).ai_status ?? "PENDING";
+        const aiError = (data as { ai_error?: string | null }).ai_error ?? null;
+        setAiPoll((prev) => ({
+          ...prev,
+          status:
+            st === "DONE"
+              ? "DONE"
+              : st === "FAILED"
+                ? "FAILED"
+                : st === "RUNNING"
+                  ? "RUNNING"
+                  : "PENDING",
+          ai_count: typeof (data as { ai_count?: number | null }).ai_count === "number"
+            ? (data as { ai_count: number }).ai_count
+            : null,
+          ai_confidence:
+            typeof (data as { ai_confidence?: number | null }).ai_confidence === "number"
+              ? (data as { ai_confidence: number }).ai_confidence
+              : null,
+          ai_error: aiError,
+          imageNotes,
+        }));
+        if (st === "DONE" || st === "FAILED") {
+          if (aiPollTimerRef.current != null) {
+            window.clearInterval(aiPollTimerRef.current);
+            aiPollTimerRef.current = null;
+          }
+        }
+        if (attempts >= MAX_ATTEMPTS && st !== "DONE" && st !== "FAILED") {
+          setAiPoll((prev) => ({ ...prev, status: "TIMEOUT" }));
+          if (aiPollTimerRef.current != null) {
+            window.clearInterval(aiPollTimerRef.current);
+            aiPollTimerRef.current = null;
+          }
+        }
+      } catch (e) {
+        console.warn("poll uncaught", e);
+      }
+    }, 2000);
+
+    return () => {
+      if (aiPollTimerRef.current != null) {
+        window.clearInterval(aiPollTimerRef.current);
+        aiPollTimerRef.current = null;
+      }
+    };
+  }, [didSubmit, lastSubmission?.id]);
 
   const reopenCamera = () => {
     if (!canAutoReopenCamera) return;
@@ -377,18 +476,58 @@ export default function Home() {
       return;
     }
 
-    const next: LocalImage[] = picked.map((file) => ({
-      id: crypto.randomUUID(),
-      file,
-      previewUrl: URL.createObjectURL(file),
-      note: "",
-      noteOpen: false,
-    }));
-    setImages((prev) => [...prev, ...next]);
+    void (async () => {
+      const next: LocalImage[] = [];
+      const blockMessages: string[] = [];
+      const warningRejectedCount = { value: 0 };
 
-    if (options?.reopenCamera && picked.length > 0) {
-      reopenCamera();
-    }
+      for (const file of picked) {
+        let qr: ImageQualityResult;
+        try {
+          qr = await validateImageQuality(file);
+        } catch (e) {
+          const msg = e instanceof Error ? e.message : "Kunne ikke sjekke bildekvalitet.";
+          blockMessages.push(`${file.name}: ${msg}`);
+          continue;
+        }
+
+        if (qr.level === "block") {
+          blockMessages.push(`${file.name}: ${qr.message}`);
+          continue;
+        }
+
+        if (qr.level === "warning") {
+          const ok = window.confirm(
+            `Kvalitetsadvarsel for ${file.name}:\n\n${qr.message}\n\nVil du sende bildet likevel? (Anbefalt: ta nytt bilde for bedre resultat.)`,
+          );
+          if (!ok) {
+            warningRejectedCount.value += 1;
+            continue;
+          }
+        }
+
+        next.push({
+          id: crypto.randomUUID(),
+          file,
+          previewUrl: URL.createObjectURL(file),
+          note: "",
+          noteOpen: false,
+          quality: qr.quality,
+          qualityPassedForced: qr.level === "warning",
+        });
+      }
+
+      if (blockMessages.length > 0) {
+        setError(blockMessages.join("\n\n"));
+      }
+
+      if (next.length > 0) {
+        setImages((prev) => [...prev, ...next]);
+        if (options?.reopenCamera && next.length > 0) {
+          reopenCamera();
+        }
+      }
+    })();
   };
 
   const removeImage = (id: string) => {
@@ -420,6 +559,13 @@ export default function Home() {
     setIsSubmitting(false);
     setDidSubmit(false);
     setLastSubmission(null);
+    setAiPoll({
+      status: "NOT_STARTED",
+      ai_count: null,
+      ai_confidence: null,
+      ai_error: null,
+      imageNotes: [],
+    });
     setImages((prev) => {
       for (const img of prev) URL.revokeObjectURL(img.previewUrl);
       return [];
@@ -535,6 +681,14 @@ export default function Home() {
           : null;
 
       step = "Oppretter innsending";
+      const imageNotesPayload: ImageNote[] = images.map((img, idx) => ({
+        image_index: idx,
+        url: uploadedPaths[idx] ?? null,
+        note: img.note.trim() ? img.note.trim() : null,
+        annotations: [],
+        ai_annotations_pending: [],
+        quality: img.quality ?? null,
+      }));
       const insertPayload: Record<string, unknown> = {
         id: submissionId,
         image_url: imageUrl,
@@ -548,7 +702,8 @@ export default function Home() {
         user_name: userName,
         type: submissionType,
         images: uploadedPaths,
-        image_notes: images.map((img) => (img.note.trim() ? img.note.trim() : null)),
+        image_notes: imageNotesPayload,
+        ai_status: "PENDING",
         note: noteValue,
         source: sourceParam ?? "web",
         app_version: appVersion,
@@ -559,7 +714,7 @@ export default function Home() {
 
       let insertRes = await supabase.from("varroa_submissions").insert(insertPayload);
       if (insertRes.error && isMissingImageNotesColumnError(insertRes.error)) {
-        delete insertPayload.image_notes;
+        delete (insertPayload as Record<string, unknown>).image_notes;
         insertRes = await supabase.from("varroa_submissions").insert(insertPayload);
       }
       if (insertRes.error) {
@@ -573,11 +728,59 @@ export default function Home() {
         throw new Error(`DB insert feilet: ${code} ${rawMsg}`);
       }
 
+      step = "Starter AI-analyse";
+      let signedList: { path: string; url: string }[] = [];
+      try {
+        const signedRes = await supabase.storage
+          .from("varroa-submissions")
+          .createSignedUrls(uploadedPaths, 60 * 30);
+        if (!signedRes.error && signedRes.data) {
+          signedList = (signedRes.data as { path: string; signedUrl: string }[] | null ?? [])
+            .filter((x) => !!x && typeof x.path === "string" && typeof x.signedUrl === "string")
+            .map((x) => ({ path: x.path, url: x.signedUrl }));
+        }
+      } catch {
+        // ignore signing errors; edge function may re-sign itself
+      }
+
+      // Fire and forget edge function call
+      void (async () => {
+        try {
+          const inferUrl = `${supabaseUrl.replace(/\/$/, "")}/functions/v1/varroa-infer`;
+          const headers: Record<string, string> = {
+            "Content-Type": "application/json",
+            apikey: anonKey,
+          };
+          if (jwtMaybe) headers.Authorization = `Bearer ${jwtMaybe}`;
+          const inferRes = await fetch(inferUrl, {
+            method: "POST",
+            headers,
+            body: JSON.stringify({
+              submission_id: submissionId,
+              signed_images: signedList,
+            }),
+          });
+          if (!inferRes.ok) {
+            console.warn("varroa-infer non-2xx:", inferRes.status, inferRes.statusText);
+          }
+        } catch (e) {
+          console.warn("varroa-infer call failed (will be retried by poller/worker later)", e);
+        }
+      })();
+
+      setAiPoll({
+        status: "PENDING",
+        ai_count: null,
+        ai_confidence: null,
+        ai_error: null,
+        imageNotes: imageNotesPayload,
+      });
       setLastSubmission({
         id: submissionId,
         type: submissionType,
         note: noteValue,
         imagesCount: uploadedPaths.length,
+        signedUrls: signedList,
       });
       setDidSubmit(true);
       setImages((prev) => {
@@ -597,6 +800,47 @@ export default function Home() {
   if (didSubmit) {
     const sentTypeLabel =
       lastSubmission?.type === "KONTROLLFOTO" ? "Kontrollfoto" : "Bunnbrett foto";
+    const signedByPath = new Map<string, string>();
+    for (const s of lastSubmission?.signedUrls ?? []) {
+      if (s?.path && s?.url) signedByPath.set(s.path, s.url);
+    }
+    const imageNotes = aiPoll.imageNotes;
+    const totalCount = aiPoll.ai_count ?? 0;
+    const avgConf = aiPoll.ai_confidence ?? null;
+    const category = getMiteCountCategory(totalCount);
+    const hasAnyAiAnnotations = imageNotes.some((n) => (n?.ai_annotations_pending?.length ?? 0) > 0);
+
+    const retryInference = async () => {
+      const supabase = getSupabaseClient();
+      const sid = lastSubmission?.id;
+      if (!supabase || !sid) return;
+      const sbUrl = process.env.NEXT_PUBLIC_SUPABASE_URL?.replace(/\/$/, "") ?? "";
+      const aKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ?? "";
+      setAiPoll((p) => ({ ...p, status: "RUNNING", ai_error: null }));
+      try {
+        const { data } = await supabase.auth.getSession();
+        const jwtMaybe = data.session?.access_token ?? null;
+        const headers: Record<string, string> = {
+          "Content-Type": "application/json",
+          apikey: aKey,
+        };
+        if (jwtMaybe) headers.Authorization = `Bearer ${jwtMaybe}`;
+        const res = await fetch(`${sbUrl}/functions/v1/varroa-infer`, {
+          method: "POST",
+          headers,
+          body: JSON.stringify({ submission_id: sid, signed_images: [] }),
+        });
+        if (!res.ok) {
+          setAiPoll((p) => ({ ...p, status: "FAILED", ai_error: `HTTP ${res.status} ${res.statusText}` }));
+        } else {
+          setAiPoll((p) => ({ ...p, status: "RUNNING" }));
+        }
+      } catch (e) {
+        const m = e instanceof Error ? e.message : String(e);
+        setAiPoll((p) => ({ ...p, status: "FAILED", ai_error: m }));
+      }
+    };
+
     return (
       <div className="flex flex-col min-h-dvh px-4 pb-10 pt-8">
         <header className="mx-auto w-full max-w-xl">
@@ -631,11 +875,11 @@ export default function Home() {
           </div>
         </header>
 
-        <main className="mx-auto mt-10 w-full max-w-xl">
+        <main className="mx-auto mt-8 w-full max-w-xl">
           <div className="rounded-3xl bg-zinc-900 border border-zinc-800 p-6">
-            <div className="text-2xl font-semibold">Takk!</div>
-            <div className="mt-2 text-zinc-300">
-              Innsendingen er mottatt. Vil du sende inn flere?
+            <div className="text-2xl font-semibold">AI-analyse kjører</div>
+            <div className="mt-2 text-zinc-300 text-sm">
+              Innsendingen er mottatt. Bildene analyseres nå av vår AI-modell. Dersom du ikke ser resultat umiddelbart, sjekk om noen minutter.
             </div>
 
             {lastSubmission ? (
@@ -647,6 +891,177 @@ export default function Home() {
                 </div>
               </div>
             ) : null}
+
+            <div className="mt-6 space-y-4">
+              {aiPoll.status === "PENDING" || aiPoll.status === "RUNNING" ? (
+                <div className="rounded-2xl border border-sky-800/60 bg-sky-950/30 p-4">
+                  <div className="flex items-center gap-3">
+                    <div className="h-3 w-3 rounded-full bg-sky-400 animate-pulse" />
+                    <div className="text-sm font-semibold text-sky-100">
+                      {aiPoll.status === "RUNNING" ? "AI analyserer bildene dine…" : "Venter på AI-tjener…"}
+                    </div>
+                  </div>
+                  <div className="mt-2 text-xs text-sky-300/80">
+                    Dette tar vanligvis 5–30 sekunder per bilde. Hold fanen åpen, så kommer resultatene.
+                  </div>
+                </div>
+              ) : null}
+
+              {aiPoll.status === "FAILED" ? (
+                <div className="rounded-2xl border border-red-900/60 bg-red-950/40 p-4">
+                  <div className="text-sm font-semibold text-red-200">❌ AI-analysen feilet</div>
+                  <div className="mt-1 text-xs text-red-200/80">
+                    {aiPoll.ai_error ? aiPoll.ai_error : "Ukjent feil. Prøv igjen nedenfor, så prøver vi på nytt."}
+                  </div>
+                  <button
+                    type="button"
+                    onClick={retryInference}
+                    className="mt-3 h-10 rounded-xl bg-red-500 px-4 text-sm font-semibold text-white active:opacity-90"
+                  >
+                    🔁 Prøv AI-analyse igjen
+                  </button>
+                </div>
+              ) : null}
+
+              {aiPoll.status === "TIMEOUT" ? (
+                <div className="rounded-2xl border border-zinc-700 bg-zinc-950 p-4">
+                  <div className="text-sm font-semibold text-zinc-200">⏱️ Tar lengre tid enn forventet</div>
+                  <div className="mt-1 text-xs text-zinc-400">
+                    Bildene vil bli analysert av en birøkter seinere. Du kan vente, eller prøv igjen nedenfor.
+                  </div>
+                  <button
+                    type="button"
+                    onClick={retryInference}
+                    className="mt-3 h-10 rounded-xl bg-zinc-800 px-4 text-sm font-semibold text-zinc-100 active:opacity-90"
+                  >
+                    🔁 Prøv AI-analyse igjen
+                  </button>
+                </div>
+              ) : null}
+
+              {aiPoll.status === "DONE" ? (
+                <div className="space-y-4">
+                  <div className="rounded-2xl border border-zinc-800 bg-zinc-950 p-4">
+                    <div className="flex flex-wrap items-center gap-3">
+                      <div className="text-sm font-semibold text-zinc-200">AI fant ca.</div>
+                      <div className="text-4xl font-extrabold text-zinc-50">{totalCount}</div>
+                      <div className="text-sm font-semibold text-zinc-300">stk midd</div>
+                      <span
+                        className={[
+                          "ml-2 inline-flex items-center rounded-full px-3 py-1.5 text-xs font-bold",
+                          category.chipClass,
+                        ].join(" ")}
+                      >
+                        {category.label}
+                      </span>
+                    </div>
+                    {avgConf != null ? (
+                      <div className="mt-2 text-xs text-zinc-400">
+                        Gjennomsnittlig sikkerhet: <span className="text-zinc-200 font-semibold">{Math.round(avgConf * 100)}%</span>
+                      </div>
+                    ) : null}
+                    <div
+                      className={[
+                        "mt-3 rounded-xl p-3 text-sm",
+                        category.level === "high"
+                          ? "bg-red-950/40 border border-red-900/50 text-red-200"
+                          : category.level === "medium"
+                            ? "bg-amber-950/30 border border-amber-900/50 text-amber-200"
+                            : "bg-emerald-950/30 border border-emerald-900/50 text-emerald-200",
+                      ].join(" ")}
+                    >
+                      {category.message}
+                    </div>
+                    <div className="mt-3 text-xs text-zinc-400">
+                      Send flere bilder for å øke treffsikkerheten — en birøkter vil gjennomgå bildene for å forbedre modellen over tid.
+                    </div>
+                  </div>
+
+                  {hasAnyAiAnnotations ? (
+                    <div className="space-y-3">
+                      <div className="text-xs font-semibold text-zinc-400">
+                        💡 Merk: Merkingene nedenfor er AI-forslag. En birøkter kan korrigere disse seinere.
+                      </div>
+                      {imageNotes.map((note) => {
+                        const idx = note.image_index;
+                        const path = note.url ?? null;
+                        const url =
+                          (path ? signedByPath.get(path) : null) ??
+                          (path && lastSubmission?.id
+                            ? `${process.env.NEXT_PUBLIC_SUPABASE_URL?.replace(/\/$/, "")}/storage/v1/object/authenticated/varroa-submissions/${encodeURIComponent(path)}`
+                            : null);
+                        const boxes = note.ai_annotations_pending ?? [];
+                        if (!url || boxes.length === 0) return null;
+                        return (
+                          <div
+                            key={idx}
+                            className="rounded-2xl border border-zinc-800 bg-zinc-950 p-3"
+                          >
+                            <div className="mb-2 flex items-center justify-between">
+                              <div className="text-xs font-semibold text-zinc-300">
+                                Bilde {idx + 1} · {boxes.length} midd
+                              </div>
+                            </div>
+                            <div className="relative w-full overflow-hidden rounded-2xl border border-zinc-800 bg-zinc-900">
+                              <div className="relative w-full">
+                                <img
+                                  src={url}
+                                  alt={`Bilde ${idx + 1} analysert`}
+                                  className="h-auto w-full object-contain"
+                                  crossOrigin="anonymous"
+                                  onError={(e) => {
+                                    (e.currentTarget as HTMLImageElement).style.visibility = "hidden";
+                                  }}
+                                />
+                                <div className="pointer-events-none absolute inset-0">
+                                  {boxes.map((b, bi) => {
+                                    const left = `${(b.x * 100).toFixed(3)}%`;
+                                    const top = `${(b.y * 100).toFixed(3)}%`;
+                                    const width = `${(b.w * 100).toFixed(3)}%`;
+                                    const height = `${(b.h * 100).toFixed(3)}%`;
+                                    const lvl = b.confidence != null && Number.isFinite(b.confidence)
+                                      ? b.confidence >= 0.85
+                                        ? "high"
+                                        : b.confidence >= 0.6
+                                          ? "medium"
+                                          : "low"
+                                      : null;
+                                    const badge =
+                                      lvl === "high"
+                                        ? "bg-emerald-500 text-white"
+                                        : lvl === "medium"
+                                          ? "bg-amber-400 text-zinc-950"
+                                          : "bg-red-500 text-white";
+                                    return (
+                                      <div
+                                        key={b.id || `ai_${idx}_${bi}`}
+                                        className="absolute border border-dashed border-sky-400 bg-transparent"
+                                        style={{ left, top, width, height }}
+                                      >
+                                        {b.confidence != null && Number.isFinite(b.confidence) ? (
+                                          <div
+                                            className={[
+                                              "absolute -top-5 left-0 rounded-md px-1 py-0.5 text-[10px] font-bold leading-none",
+                                              badge,
+                                            ].join(" ")}
+                                          >
+                                            {Math.round(b.confidence * 100)}%
+                                          </div>
+                                        ) : null}
+                                      </div>
+                                    );
+                                  })}
+                                </div>
+                              </div>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  ) : null}
+                </div>
+              ) : null}
+            </div>
 
             <div className="mt-6 grid grid-cols-1 gap-3">
               <button
