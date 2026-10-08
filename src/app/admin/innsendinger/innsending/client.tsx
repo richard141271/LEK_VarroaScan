@@ -1483,8 +1483,8 @@ export function ProductionSubmissionClient() {
       const headers: Record<string, string> = {
         "Content-Type": "application/json",
         apikey: anonKey,
+        Authorization: `Bearer ${jwtMaybe}`,
       };
-      if (jwtMaybe && jwtMaybe !== anonKey) headers.Authorization = `Bearer ${jwtMaybe}`;
       const res = await fetch(`${sbUrl}/functions/v1/varroa-infer`, {
         method: "POST",
         headers,
@@ -1586,8 +1586,8 @@ export function ProductionSubmissionClient() {
       const headers: Record<string, string> = {
         "Content-Type": "application/json",
         apikey: anonKey,
+        Authorization: `Bearer ${jwtMaybe || anonKey}`,
       };
-      if (jwtMaybe) headers.Authorization = `Bearer ${jwtMaybe}`;
       const res = await fetch(`${sbUrl}/functions/v1/varroa-export-training`, {
         method: "POST",
         headers,

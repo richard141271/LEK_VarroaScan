@@ -763,8 +763,8 @@ export default function Home() {
         const headers: Record<string, string> = {
           "Content-Type": "application/json",
           apikey: anonKey,
+          Authorization: `Bearer ${jwtMaybe || anonKey}`,
         };
-        if (jwtMaybe) headers.Authorization = `Bearer ${jwtMaybe}`;
         const inferRes = await fetch(inferUrl, {
           method: "POST",
           headers,
@@ -856,8 +856,8 @@ export default function Home() {
         const headers: Record<string, string> = {
           "Content-Type": "application/json",
           apikey: aKey,
+          Authorization: `Bearer ${jwtMaybe || aKey}`,
         };
-        if (jwtMaybe) headers.Authorization = `Bearer ${jwtMaybe}`;
         const res = await fetch(`${sbUrl}/functions/v1/varroa-infer`, {
           method: "POST",
           headers,
