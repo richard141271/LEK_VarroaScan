@@ -17,7 +17,7 @@ import {
 
 type SubmissionType = "BUNNBRETT_FOTO" | "KONTROLLFOTO";
 
-const MAX_FILE_SIZE_MB = 15;
+const MAX_FILE_SIZE_MB = 50;
 const MOBILE_CAMERA_LOOP_RE = /iPhone|iPad|iPod|Android/i;
 
 type LocalImage = {
@@ -383,7 +383,7 @@ export default function Home() {
     const supabase = getSupabaseClient();
     if (!supabase) return;
     let attempts = 0;
-    const MAX_ATTEMPTS = 90; // 90 * 1s = 90 seconds (ca 1.5 minutt max ventetid)
+    const MAX_ATTEMPTS = 180; // 180 * 1s = 180 seconds (ca 3 minutter max for store 48MB bilder på tregt nettverk)
     aiPollTimerRef.current = window.setInterval(async () => {
       attempts += 1;
       try {
@@ -495,27 +495,22 @@ export default function Home() {
 
       for (const file of picked) {
         let qr: ImageQualityResult;
+        let qualityCheckFailed = false;
         try {
           qr = await validateImageQuality(file);
         } catch (e) {
-          const msg = e instanceof Error ? e.message : "Kunne ikke sjekke bildekvalitet.";
-          blockMessages.push(`${file.name}: ${msg}`);
-          continue;
+          qualityCheckFailed = true;
+          qr = {
+            pass: true,
+            level: "ok",
+            message: "",
+            quality: { width: 1920, height: 1080, laplacianVariance: 0, grayscaleStdDev: 0 },
+          };
         }
 
-        if (qr.level === "block") {
+        if (!qualityCheckFailed && qr.level === "block") {
           blockMessages.push(`${file.name}: ${qr.message}`);
           continue;
-        }
-
-        if (qr.level === "warning") {
-          const ok = window.confirm(
-            `Kvalitetsadvarsel for ${file.name}:\n\n${qr.message}\n\nVil du sende bildet likevel? (Anbefalt: ta nytt bilde for bedre resultat.)`,
-          );
-          if (!ok) {
-            warningRejectedCount.value += 1;
-            continue;
-          }
         }
 
         next.push({
@@ -525,7 +520,7 @@ export default function Home() {
           note: "",
           noteOpen: false,
           quality: qr.quality,
-          qualityPassedForced: qr.level === "warning",
+          qualityPassedForced: qr.level === "warning" || qualityCheckFailed,
         });
       }
 

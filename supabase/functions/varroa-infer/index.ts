@@ -234,9 +234,9 @@ Deno.serve(async (req: Request) => {
         if (!roboKey) {
           throw new Error("ROBOFLOW_INFERENCE_KEY is not set in Supabase Function Secrets.");
         }
-        // Timeout each Roboflow call at 30s to avoid hanging edge functions (Roboflow usually answers in ~3s)
+        // Timeout each Roboflow call at 90s; iPhone 15 Pro Max 48MP pictures can be 50MB; need time for Roboflow to download from signed URL
         const ctrl = new AbortController();
-        const t = setTimeout(() => ctrl.abort("Roboflow call timed out after 30s"), 30000);
+        const t = setTimeout(() => ctrl.abort("Roboflow call timed out after 90s"), 90000);
         let resp: Response;
         try {
         resp = await fetch(roboUrl, {
