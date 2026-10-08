@@ -40,12 +40,45 @@ const DEFAULT_WORKFLOW_URL =
   "https://serverless.roboflow.com/lek-vision-lab/workflows/varroa-detection-v2-logic";
 
 Deno.serve(async (req: Request) => {
+  // Browsers send OPTIONS (CORS preflight) before POST. We must answer OK with permissive
+  // CORS headers or the browser will abort with "Failed to fetch" / TypeError network error.
+  if (req.method === "OPTIONS") {
+    return new Response(null, {
+      status: 204,
+      headers: {
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Methods": "POST, OPTIONS",
+        "Access-Control-Allow-Headers":
+          "Content-Type, Authorization, apikey, X-Client-Info, X-Supabase-Traceparent",
+        "Access-Control-Max-Age": "86400",
+      },
+    });
+  }
   if (req.method !== "POST") {
     return new Response(JSON.stringify({ error: "Method Not Allowed", method: req.method }), {
       status: 405,
-      headers: { "Content-Type": "application/json" },
+      headers: {
+        "Content-Type": "application/json",
+        "Access-Control-Allow-Origin": "*",
+      },
     });
   }
+
+  // Base CORS headers we always attach to responses so cross-origin browser calls succeed.
+  const baseCors = {
+    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Headers":
+      "Content-Type, Authorization, apikey, X-Client-Info, X-Supabase-Traceparent",
+  };
+  const jsonResp = (body: unknown, status = 200, extra?: Record<string, string>) =>
+    new Response(JSON.stringify(body), {
+      status,
+      headers: {
+        "Content-Type": "application/json",
+        ...baseCors,
+        ...(extra ?? {}),
+      },
+    });
 
   const sbUrl = Deno.env.get("SUPABASE_URL") ?? "";
   const sbAnonKey = Deno.env.get("SUPABASE_ANON_KEY") ?? "";
@@ -55,16 +88,13 @@ Deno.serve(async (req: Request) => {
   const roboUrl = Deno.env.get("ROBOFLOW_WORKFLOW_URL") ?? DEFAULT_WORKFLOW_URL;
 
   if (!sbUrl || !sbServiceRole) {
-    return new Response(
-      JSON.stringify({ error: "Missing SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY in function env." }),
-      { status: 500, headers: { "Content-Type": "application/json" } },
-    );
+    return jsonResp({ error: "Missing SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY in function env." }, 500);
   }
   if (!roboKey) {
     // Fail FAST if Roboflow key is missing; don't even mark RUNNING so caller sees error immediately.
-    return new Response(
-      JSON.stringify({ error: "Missing ROBOFLOW_INFERENCE_KEY in Supabase Function Secrets. Run: supabase secrets set ROBOFLOW_INFERENCE_KEY=..." }),
-      { status: 500, headers: { "Content-Type": "application/json" } },
+    return jsonResp(
+      { error: "Missing ROBOFLOW_INFERENCE_KEY in Supabase Function Secrets. Run: supabase secrets set ROBOFLOW_INFERENCE_KEY=..." },
+      500,
     );
   }
 
@@ -72,18 +102,12 @@ Deno.serve(async (req: Request) => {
   try {
     payload = await req.json();
   } catch {
-    return new Response(JSON.stringify({ error: "Invalid JSON body" }), {
-      status: 400,
-      headers: { "Content-Type": "application/json" },
-    });
+    return jsonResp({ error: "Invalid JSON body" }, 400);
   }
 
   const submissionId = payload.submission_id;
   if (!submissionId || typeof submissionId !== "string") {
-    return new Response(JSON.stringify({ error: "Missing submission_id" }), {
-      status: 400,
-      headers: { "Content-Type": "application/json" },
-    });
+    return jsonResp({ error: "Missing submission_id" }, 400);
   }
 
   const signedIn: Map<string, string> = new Map();
@@ -104,16 +128,13 @@ Deno.serve(async (req: Request) => {
     .maybeSingle();
 
   if (fetchErr) {
-    return new Response(
-      JSON.stringify({ error: "Failed fetching submission", details: String(fetchErr.message ?? fetchErr) }),
-      { status: 500, headers: { "Content-Type": "application/json" } },
+    return jsonResp(
+      { error: "Failed fetching submission", details: String(fetchErr.message ?? fetchErr) },
+      500,
     );
   }
   if (!row) {
-    return new Response(JSON.stringify({ error: "Submission not found" }), {
-      status: 404,
-      headers: { "Content-Type": "application/json" },
-    });
+    return jsonResp({ error: "Submission not found" }, 404);
   }
 
   const r = row as {
@@ -128,10 +149,7 @@ Deno.serve(async (req: Request) => {
       .from("varroa_submissions")
       .update({ ai_status: "FAILED", ai_error: "No images on submission" })
       .eq("id", submissionId);
-    return new Response(JSON.stringify({ error: "Submission has no images" }), {
-      status: 400,
-      headers: { "Content-Type": "application/json" },
-    });
+    return jsonResp({ error: "Submission has no images" }, 400);
   }
 
   // Mark RUNNING
@@ -451,9 +469,9 @@ Deno.serve(async (req: Request) => {
       .from("varroa_submissions")
       .update({ ai_status: "FAILED", ai_error: msg, ai_result: roboResponses })
       .eq("id", submissionId);
-    return new Response(
-      JSON.stringify({ error: `Inference failed: ${msg}`, details: roboResponses }),
-      { status: 500, headers: { "Content-Type": "application/json" } },
+    return jsonResp(
+      { error: `Inference failed: ${msg}`, details: roboResponses },
+      500,
     );
   }
 
@@ -468,14 +486,14 @@ Deno.serve(async (req: Request) => {
     image_notes: coerced,
   }).eq("id", submissionId);
 
-  return new Response(
-    JSON.stringify({
+  return jsonResp(
+    {
       ok: true,
       submission_id: submissionId,
       ai_count: totalCount,
       ai_confidence: avgConf,
       per_image_count: perImageCount,
-    }),
-    { status: 200, headers: { "Content-Type": "application/json" } },
+    },
+    200,
   );
 });

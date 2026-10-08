@@ -38,12 +38,40 @@ function isTruthyRole(r: unknown): boolean {
 }
 
 Deno.serve(async (req: Request) => {
+  // Handle CORS preflight OPTIONS so cross-origin panels (admin preview on
+  // different origin / localhost / mobile wrapper) work.
+  if (req.method === "OPTIONS") {
+    return new Response(null, {
+      status: 204,
+      headers: {
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Methods": "POST, OPTIONS",
+        "Access-Control-Allow-Headers":
+          "Content-Type, Authorization, apikey, X-Client-Info, X-Supabase-Traceparent",
+        "Access-Control-Max-Age": "86400",
+      },
+    });
+  }
   if (req.method !== "POST") {
     return new Response(JSON.stringify({ error: "Method Not Allowed" }), {
       status: 405,
-      headers: { "Content-Type": "application/json" },
+      headers: {
+        "Content-Type": "application/json",
+        "Access-Control-Allow-Origin": "*",
+      },
     });
   }
+  const jsonResp = (body: unknown, status = 200, extra?: Record<string, string>) =>
+    new Response(JSON.stringify(body), {
+      status,
+      headers: {
+        "Content-Type": "application/json",
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Headers":
+          "Content-Type, Authorization, apikey, X-Client-Info, X-Supabase-Traceparent",
+        ...(extra ?? {}),
+      },
+    });
   const sbUrl = Deno.env.get("SUPABASE_URL") ?? "";
   const sbServiceRole =
     Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? Deno.env.get("SUPABASE_SERVICE_KEY") ?? "";
@@ -52,18 +80,15 @@ Deno.serve(async (req: Request) => {
   const workspace = Deno.env.get("ROBOFLOW_WORKSPACE") ?? DEFAULT_WORKSPACE;
 
   if (!sbUrl || !sbServiceRole) {
-    return new Response(JSON.stringify({ error: "Missing Supabase env in function." }), {
-      status: 500,
-      headers: { "Content-Type": "application/json" },
-    });
+    return jsonResp({ error: "Missing Supabase env in function." }, 500);
   }
   if (!roboDatasetKey || !projectId) {
-    return new Response(
-      JSON.stringify({
+    return jsonResp(
+      {
         error:
           "Missing ROBOFLOW_DATASET_API_KEY and/or ROBOFLOW_PROJECT_ID secrets. Set via `supabase secrets set`.",
-      }),
-      { status: 500, headers: { "Content-Type": "application/json" } },
+      },
+      500,
     );
   }
 
@@ -99,9 +124,9 @@ Deno.serve(async (req: Request) => {
     }
   }
   if (!adminUserId) {
-    return new Response(
-      JSON.stringify({ error: "Unauthorized. Admin role (SUPERADMIN/FAGANSVARLIG) required." }),
-      { status: 401, headers: { "Content-Type": "application/json" } },
+    return jsonResp(
+      { error: "Unauthorized. Admin role (SUPERADMIN/FAGANSVARLIG) required." },
+      401,
     );
   }
 
@@ -109,265 +134,212 @@ Deno.serve(async (req: Request) => {
   try {
     body = await req.json();
   } catch {
-    return new Response(JSON.stringify({ error: "Invalid JSON body" }), {
-      status: 400,
-      headers: { "Content-Type": "application/json" },
-    });
+    return jsonResp({ error: "Invalid JSON body" }, 400);
   }
-
-  // Resolve queue row
-  let queueWhere: Record<string, unknown> = {};
-  if (body.queue_id) queueWhere = { id: body.queue_id };
-  else if (body.submission_id && typeof body.image_index === "number") {
-    queueWhere = { submission_id: body.submission_id, image_index: body.image_index };
-  } else {
-    return new Response(
-      JSON.stringify({
-        error: "Body must contain either { queue_id } or { submission_id, image_index }",
-      }),
-      { status: 400, headers: { "Content-Type": "application/json" } },
+  // ...(rest of function handled below, concatenated from original after the write)
+  if (!body.queue_id && !(body.submission_id && typeof body.image_index === "number")) {
+    return jsonResp(
+      { error: "Provide either queue_id OR (submission_id AND image_index)." },
+      400,
     );
   }
 
-  let row: Record<string, unknown> | null = null;
+  // Locate/create a queue row
+  let queueId: string | null = body.queue_id ?? null;
+  if (!queueId) {
+    const { data, error } = await sbPrivileged
+      .from("varroa_annotation_export_queue")
+      .select("id")
+      .eq("submission_id", body.submission_id)
+      .eq("image_index", body.image_index)
+      .maybeSingle();
+    if (error) return jsonResp({ error: error.message }, 500);
+    if (data) {
+      queueId = (data as { id: string }).id;
+    } else {
+      const { data: ins, error: insErr } = await sbPrivileged
+        .from("varroa_annotation_export_queue")
+        .insert({
+          submission_id: body.submission_id,
+          image_index: body.image_index,
+          status: "PENDING",
+          approved_by_admin_id: adminUserId === "service-role" ? null : adminUserId,
+        } as never)
+        .select("id")
+        .maybeSingle();
+      if (insErr) return jsonResp({ error: insErr.message }, 500);
+      queueId = ins ? (ins as { id: string }).id : null;
+    }
+  }
+  if (!queueId) {
+    return jsonResp({ error: "No queue id available." }, 400);
+  }
+
+  // Mark RUNNING (with retry_count increment if we can read it)
   {
-    const qb = sbPrivileged.from("varroa_annotation_export_queue").select("*");
-    for (const [k, v] of Object.entries(queueWhere)) (qb as unknown as { eq: (k: string, v: unknown) => typeof qb }).eq(k, v);
-    const { data, error } = await qb.maybeSingle();
-    if (error) return new Response(JSON.stringify({ error: error.message }), { status: 500, headers: { "Content-Type": "application/json" } });
-    row = data as Record<string, unknown> | null;
-  }
-  if (!row) {
-    return new Response(JSON.stringify({ error: "Queue row not found." }), {
-      status: 404,
-      headers: { "Content-Type": "application/json" },
-    });
+    const { data: cur } = await sbPrivileged
+      .from("varroa_annotation_export_queue")
+      .select("retry_count")
+      .eq("id", queueId)
+      .maybeSingle();
+    const rc = cur && typeof (cur as { retry_count?: unknown }).retry_count === "number"
+      ? (cur as { retry_count: number }).retry_count + 1
+      : 1;
+    const { error } = await sbPrivileged
+      .from("varroa_annotation_export_queue")
+      .update({ status: "RUNNING", retry_count: rc, error_msg: null } as never)
+      .eq("id", queueId);
+    if (error) return jsonResp({ error: error.message }, 500);
   }
 
-  const qid = String(row.id);
-  const sid = String(row.submission_id);
-  const imageIndex = Number(row.image_index);
-
-  // Mark RUNNING, increment retry count
-  await sbPrivileged
-    .from("varroa_annotation_export_queue")
-    .update({
-      status: "RUNNING",
-      retry_count: Number(row.retry_count ?? 0) + 1,
-      approved_by_admin_id:
-        adminUserId === "service-role"
-          ? (row.approved_by_admin_id ?? null)
-          : adminUserId,
-      error_msg: null,
-    })
-    .eq("id", qid);
+  const markFailed = async (msg: string) => {
+    await sbPrivileged
+      .from("varroa_annotation_export_queue")
+      .update({ status: "FAILED", error_msg: msg } as never)
+      .eq("id", queueId!);
+  };
 
   try {
-    // Fetch submission
+    const { data: qRow, error: qErr } = await sbPrivileged
+      .from("varroa_annotation_export_queue")
+      .select("id, submission_id, image_index")
+      .eq("id", queueId)
+      .maybeSingle();
+    if (qErr) throw new Error(qErr.message);
+    if (!qRow) throw new Error("Queue row missing");
+    const submissionId = (qRow as { submission_id: string }).submission_id;
+    const imageIndex = (qRow as { image_index: number }).image_index;
+
     const { data: sub, error: subErr } = await sbPrivileged
       .from("varroa_submissions")
       .select("id, images, image_notes")
-      .eq("id", sid)
+      .eq("id", submissionId)
       .maybeSingle();
-    if (subErr) throw new Error(`Fetch submission: ${subErr.message}`);
-    if (!sub) throw new Error("Submission missing for queue row.");
-    const s = sub as Record<string, unknown>;
-    const images: string[] = Array.isArray(s.images) ? (s.images as string[]) : [];
-    const path = images[imageIndex];
-    if (!path) throw new Error(`Missing image path at index ${imageIndex}`);
-
-    // Final annotations = image_notes[image_index].annotations (admin-corrected).
-    let notes: Note[] = [];
-    try {
-      const raw = s.image_notes;
-      if (Array.isArray(raw)) notes = raw as Note[];
-    } catch {
-      notes = [];
+    if (subErr) throw new Error(subErr.message);
+    if (!sub) throw new Error("Submission missing");
+    const images = Array.isArray((sub as { images?: unknown }).images)
+      ? ((sub as { images: unknown[] }).images.filter((p) => typeof p === "string") as string[])
+      : [];
+    const imagePath = images[imageIndex];
+    if (!imagePath) throw new Error("Missing image at index " + imageIndex);
+    const notesIn = Array.isArray((sub as { image_notes?: unknown }).image_notes)
+      ? ((sub as { image_notes: unknown[] }).image_notes as Note[])
+      : [];
+    const noteObj = notesIn.find((n) => n && n.image_index === imageIndex) ??
+      notesIn[imageIndex] ??
+      ({ image_index: imageIndex, url: imagePath, annotations: [] } as Note);
+    const adminAnnotations = Array.isArray(noteObj.annotations) ? noteObj.annotations : [];
+    if (adminAnnotations.length === 0) {
+      throw new Error(
+        "Ingen admin-godkjente annotasjoner. Du må rette/opprette bokser i admin-review først (kun annotasjoner du har bekreftet sendes til trening, ikke rå AI-forslag).",
+      );
     }
-    const found = notes.find(
-      (n) => n && n.image_index === imageIndex,
-    ) ?? notes[imageIndex] ?? null;
-    const finalAnnotations: BB[] =
-      found && Array.isArray(found.annotations) ? (found.annotations as BB[]).filter(Boolean) : [];
 
-    // Sign the image URL (HTTPS required by Roboflow)
+    // Sign URL for upload to Roboflow (HTTPS required)
+    let signedUrl = "";
     const signRes = await sbPrivileged.storage
       .from("varroa-submissions")
-      .createSignedUrl(path, 60 * 30);
+      .createSignedUrl(imagePath, 60 * 60);
     if (signRes.error || !signRes.data?.signedUrl) {
-      throw new Error(
-        `Could not create signed URL: ${signRes.error?.message ?? "Unknown signing error"}`,
-      );
+      throw new Error("Failed to sign storage URL: " + (signRes.error?.message ?? "unknown"));
     }
-    const signedUrl = signRes.data.signedUrl;
+    signedUrl = signRes.data.signedUrl;
 
-    // --- 1) Upload image to Roboflow dataset ---
+    // Core Roboflow Dataset API
     const uploadUrl =
-      `https://api.roboflow.com/${encodeURIComponent(workspace)}/` +
-      `${encodeURIComponent(projectId)}/upload?api_key=${encodeURIComponent(roboDatasetKey)}`;
-    const name = `${sid.slice(0, 8)}_img${imageIndex}.jpg`;
-    const uploadBody = JSON.stringify({
+      `https://api.roboflow.com/${encodeURIComponent(workspace)}/${encodeURIComponent(projectId)}/upload?api_key=${encodeURIComponent(roboDatasetKey)}`;
+    const annotateUrl =
+      `https://api.roboflow.com/${encodeURIComponent(workspace)}/${encodeURIComponent(projectId)}/annotate?api_key=${encodeURIComponent(roboDatasetKey)}`;
+    const split = "train";
+
+    // Roboflow upload (name + split + image URL as hosted)
+    const uploadBody: Record<string, unknown> = {
+      name: `sub_${submissionId}_${imageIndex}`,
+      split,
       image: signedUrl,
-      name,
-      split: "train",
+    };
+    const upResp = await fetch(uploadUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(uploadBody),
     });
-    let uploadJson: Record<string, unknown> = {};
-    {
-      const r = await fetch(uploadUrl, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: uploadBody,
-      });
-      const text = await r.text();
-      try {
-        uploadJson = text ? JSON.parse(text) : {};
-      } catch {
-        uploadJson = { raw_text: text };
-      }
-      if (!r.ok) {
-        throw new Error(
-          `Roboflow upload failed HTTP ${r.status} ${r.statusText}: ${text.slice(0, 800)}`,
-        );
-      }
+    const upText = await upResp.text();
+    let upJson: unknown = null;
+    try { upJson = upText ? JSON.parse(upText) : null; } catch { /* ignore */ }
+    if (!upResp.ok) {
+      throw new Error(
+        `Roboflow upload failed (HTTP ${upResp.status}): ${JSON.stringify(upJson ?? upText.slice(0, 500))}`,
+      );
+    }
+    const roboflowImageId: string =
+      (upJson && typeof upJson === "object" && typeof (upJson as Record<string, unknown>).id === "string"
+        ? (upJson as Record<string, string>).id
+        : (upJson && typeof upJson === "object" && typeof (upJson as Record<string, unknown>).imageId === "string"
+          ? (upJson as Record<string, string>).imageId
+          : ""));
+    if (!roboflowImageId) {
+      throw new Error("Roboflow upload returned no image id");
     }
 
-    const roboflowImageId: string | null =
-      (typeof uploadJson.id === "string" && uploadJson.id)
-        ? uploadJson.id
-        : (uploadJson as Record<string, unknown>).image &&
-            typeof (uploadJson as Record<string, unknown>).image === "object" &&
-            typeof ((uploadJson as Record<string, unknown>).image as Record<string, unknown>).id === "string"
-          ? ((uploadJson as Record<string, unknown>).image as Record<string, unknown>).id as string
-          : null;
-    if (!roboflowImageId) {
+    // Annotations in multiple formats for robustness
+    const annotations: unknown[] = adminAnnotations.map((b) => {
+      const cx = Math.max(0, Math.min(1, b.x + b.w / 2));
+      const cy = Math.max(0, Math.min(1, b.y + b.h / 2));
+      const w = Math.max(0.0005, Math.min(1, b.w));
+      const h = Math.max(0.0005, Math.min(1, b.h));
+      const x = Math.max(0, Math.min(1 - w, b.x));
+      const y = Math.max(0, Math.min(1 - h, b.y));
+      return {
+        x, y, width: w, height: h,
+        x_min: x, y_min: y, x_max: Math.min(1, x + w), y_max: Math.min(1, y + h),
+        cx, cy,
+        class: "varroa",
+        class_name: "varroa",
+        label: "varroa",
+      };
+    });
+    const annotateBody = {
+      id: roboflowImageId,
+      annotations,
+    };
+    const anResp = await fetch(annotateUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(annotateBody),
+    });
+    const anText = await anResp.text();
+    let anJson: unknown = null;
+    try { anJson = anText ? JSON.parse(anText) : null; } catch { /* ignore */ }
+    if (!anResp.ok) {
       throw new Error(
-        `Roboflow upload response missing id. Full response: ${JSON.stringify(uploadJson).slice(0, 1000)}`,
+        `Roboflow annotate failed (HTTP ${anResp.status}): ${JSON.stringify(anJson ?? anText.slice(0, 500))}`,
       );
     }
 
-    // --- 2) Annotate image in Roboflow ---
-    // Send both normalized and absolute-ish coordinates to be tolerant to Roboflow format
-    // preferences. x/y here are left/top w/h normalized 0..1. Roboflow accepts:
-    //   - center normalized:  { label, x, y, width, height } where x/y = center, normalized 0..1
-    //   - corners pixel:      { label, x_min, y_min, x_max, y_max } in absolute pixels
-    // Without image dimensions we can't produce true pixels. We send the normalized form with
-    // the common center-bbox convention, as well as all variant keys for maximum compatibility.
-    const roboflowAnnotations: Record<string, unknown>[] = [];
-    for (const b of finalAnnotations) {
-      const x = Number(b.x);
-      const y = Number(b.y);
-      const w = Number(b.w);
-      const h = Number(b.h);
-      if (![x, y, w, h].every(Number.isFinite)) continue;
-      const cls = (b.class_name || b.class || "varroa").toString().toLowerCase().includes("varroa") ? "varroa" : (b.class_name || b.class || "varroa").toString();
-      const cx = Math.max(0, Math.min(1, x + w / 2));
-      const cy = Math.max(0, Math.min(1, y + h / 2));
-      const nw = Math.max(0.0001, Math.min(1, w));
-      const nh = Math.max(0.0001, Math.min(1, h));
-      const nx = Math.max(0, Math.min(1, x));
-      const ny = Math.max(0, Math.min(1, y));
-      roboflowAnnotations.push({
-        label: cls,
-        class: cls,
-        class_name: cls,
-        // Normalized center + size (most common for Roboflow upload endpoint)
-        x: cx,
-        y: cy,
-        cx,
-        cy,
-        center_x: cx,
-        center_y: cy,
-        width: nw,
-        height: nh,
-        w: nw,
-        h: nh,
-        // Normalized corners (Pascal VOC style but normalized)
-        x_min: nx,
-        xmin: nx,
-        left: nx,
-        y_min: ny,
-        ymin: ny,
-        top: ny,
-        x_max: Math.min(1, nx + nw),
-        xmax: Math.min(1, nx + nw),
-        right: Math.min(1, nx + nw),
-        y_max: Math.min(1, ny + nh),
-        ymax: Math.min(1, ny + nh),
-        bottom: Math.min(1, ny + nh),
-      });
-    }
-
-    const annotateUrl =
-      `https://api.roboflow.com/${encodeURIComponent(workspace)}/` +
-      `${encodeURIComponent(projectId)}/annotate?api_key=${encodeURIComponent(roboDatasetKey)}`;
-    const annotateBody = JSON.stringify({
-      id: roboflowImageId,
-      image_id: roboflowImageId,
-      annotations: roboflowAnnotations,
-      boxes: roboflowAnnotations,
-    });
-    let annotateJson: unknown = {};
-    {
-      const r = await fetch(annotateUrl, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: annotateBody,
-      });
-      const text = await r.text();
-      try {
-        annotateJson = text ? JSON.parse(text) : {};
-      } catch {
-        annotateJson = { raw_text: text };
-      }
-      if (!r.ok) {
-        throw new Error(
-          `Roboflow annotate failed HTTP ${r.status} ${r.statusText}: ${text.slice(0, 800)}`,
-        );
-      }
-    }
-
-    // All good — mark SENT
-    await sbPrivileged
+    const now = new Date().toISOString();
+    const payload = {
+      roboflow_image_id: roboflowImageId,
+      image_path: imagePath,
+      annotation_count: annotations.length,
+      upload_response: upJson ?? null,
+      annotate_response: anJson ?? null,
+    };
+    const { error: updateErr } = await sbPrivileged
       .from("varroa_annotation_export_queue")
       .update({
         status: "SENT",
-        sent_at: new Date().toISOString(),
         roboflow_image_id: roboflowImageId,
-        payload: {
-          uploaded_at: new Date().toISOString(),
-          roboflow_upload: uploadJson,
-          roboflow_annotate: annotateJson as Record<string, unknown>,
-          annotations_count: finalAnnotations.length,
-          image_path: path,
-        },
+        payload: payload as never,
+        sent_at: now,
         error_msg: null,
-      })
-      .eq("id", qid);
+      } as never)
+      .eq("id", queueId!);
+    if (updateErr) throw new Error(updateErr.message);
 
-    return new Response(
-      JSON.stringify({
-        ok: true,
-        queue_id: qid,
-        submission_id: sid,
-        image_index: imageIndex,
-        roboflow_image_id: roboflowImageId,
-        annotations_count: finalAnnotations.length,
-      }),
-      { status: 200, headers: { "Content-Type": "application/json" } },
-    );
+    return jsonResp({ ok: true, queue_id: queueId, roboflow_image_id: roboflowImageId, annotations_sent: annotations.length });
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
-    try {
-      await sbPrivileged
-        .from("varroa_annotation_export_queue")
-        .update({ status: "FAILED", error_msg: msg })
-        .eq("id", qid);
-    } catch {
-      // swallow rollback error
-    }
-    return new Response(
-      JSON.stringify({ ok: false, error: msg }),
-      { status: 500, headers: { "Content-Type": "application/json" } },
-    );
+    try { await markFailed(msg); } catch { /* swallow */ }
+    return jsonResp({ error: msg }, 500);
   }
 });
