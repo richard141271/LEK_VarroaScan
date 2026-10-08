@@ -402,26 +402,38 @@ export default function Home() {
         const imageNotes = coerceImageNotes((data as { image_notes: unknown }).image_notes);
         const st = (data as { ai_status?: string }).ai_status ?? "PENDING";
         const aiError = (data as { ai_error?: string | null }).ai_error ?? null;
-        setAiPoll((prev) => ({
-          ...prev,
-          status:
-            st === "DONE"
+        setAiPoll((prev) => {
+          // If we already have a LOCAL FAILED state from the direct edge func fetch call (HTTP 4xx/5xx),
+          // but DB still shows PENDING/RUNNING with no ai_error, preserve the local FAILED state
+          // so the user doesn't see the red error box flash and disappear after 1 second.
+          const preserveLocalFailure =
+            prev.status === "FAILED" &&
+            prev.ai_error != null &&
+            aiError == null &&
+            (st === "PENDING" || st === "RUNNING");
+          const mappedStatus = preserveLocalFailure
+            ? "FAILED"
+            : st === "DONE"
               ? "DONE"
               : st === "FAILED"
                 ? "FAILED"
                 : st === "RUNNING"
                   ? "RUNNING"
-                  : "PENDING",
-          ai_count: typeof (data as { ai_count?: number | null }).ai_count === "number"
-            ? (data as { ai_count: number }).ai_count
-            : null,
-          ai_confidence:
-            typeof (data as { ai_confidence?: number | null }).ai_confidence === "number"
-              ? (data as { ai_confidence: number }).ai_confidence
+                  : "PENDING";
+          return {
+            ...prev,
+            status: mappedStatus,
+            ai_count: typeof (data as { ai_count?: number | null }).ai_count === "number"
+              ? (data as { ai_count: number }).ai_count
               : null,
-          ai_error: aiError,
-          imageNotes,
-        }));
+            ai_confidence:
+              typeof (data as { ai_confidence?: number | null }).ai_confidence === "number"
+                ? (data as { ai_confidence: number }).ai_confidence
+                : null,
+            ai_error: preserveLocalFailure ? prev.ai_error : aiError,
+            imageNotes,
+          };
+        });
         if (st === "DONE" || st === "FAILED") {
           if (aiPollTimerRef.current != null) {
             window.clearInterval(aiPollTimerRef.current);

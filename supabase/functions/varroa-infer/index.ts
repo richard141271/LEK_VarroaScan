@@ -221,13 +221,17 @@ Deno.serve(async (req: Request) => {
         const t = setTimeout(() => ctrl.abort("Roboflow call timed out after 30s"), 30000);
         let resp: Response;
         try {
-          resp = await fetch(roboUrl, {
+        resp = await fetch(roboUrl, {
             method: "POST",
             headers: {
               "Content-Type": "application/json",
               Authorization: `Bearer ${roboKey}`,
             },
-            body: JSON.stringify({ image: signedUrl }),
+            body: JSON.stringify({
+              inputs: {
+                image: signedUrl,
+              },
+            }),
             signal: ctrl.signal,
           });
         } finally {
