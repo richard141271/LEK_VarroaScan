@@ -383,7 +383,7 @@ export default function Home() {
     const supabase = getSupabaseClient();
     if (!supabase) return;
     let attempts = 0;
-    const MAX_ATTEMPTS = 30; // 30 * 2s = 60 seconds
+    const MAX_ATTEMPTS = 90; // 90 * 1s = 90 seconds (ca 1.5 minutt max ventetid)
     aiPollTimerRef.current = window.setInterval(async () => {
       attempts += 1;
       try {
@@ -438,7 +438,7 @@ export default function Home() {
       } catch (e) {
         console.warn("poll uncaught", e);
       }
-    }, 2000);
+    }, 1000);
 
     return () => {
       if (aiPollTimerRef.current != null) {
@@ -743,36 +743,42 @@ export default function Home() {
         // ignore signing errors; edge function may re-sign itself
       }
 
-      // Fire and forget edge function call
-      void (async () => {
-        try {
-          const inferUrl = `${supabaseUrl.replace(/\/$/, "")}/functions/v1/varroa-infer`;
-          const headers: Record<string, string> = {
-            "Content-Type": "application/json",
-            apikey: anonKey,
-          };
-          if (jwtMaybe) headers.Authorization = `Bearer ${jwtMaybe}`;
-          const inferRes = await fetch(inferUrl, {
-            method: "POST",
-            headers,
-            body: JSON.stringify({
-              submission_id: submissionId,
-              signed_images: signedList,
-            }),
-          });
-          if (!inferRes.ok) {
-            console.warn("varroa-infer non-2xx:", inferRes.status, inferRes.statusText);
-          }
-        } catch (e) {
-          console.warn("varroa-infer call failed (will be retried by poller/worker later)", e);
+      // Call edge function for AI inference. If HTTP error → fail immediately so user doesn't wait 60s for timeout.
+      let initialAIStatus: AIPollState["status"] = "PENDING";
+      let initialAIError: string | null = null;
+      try {
+        const inferUrl = `${supabaseUrl.replace(/\/$/, "")}/functions/v1/varroa-infer`;
+        const headers: Record<string, string> = {
+          "Content-Type": "application/json",
+          apikey: anonKey,
+        };
+        if (jwtMaybe) headers.Authorization = `Bearer ${jwtMaybe}`;
+        const inferRes = await fetch(inferUrl, {
+          method: "POST",
+          headers,
+          body: JSON.stringify({
+            submission_id: submissionId,
+            signed_images: signedList,
+          }),
+        });
+        if (!inferRes.ok) {
+          let msg = `AI-tjener svarte ikke (HTTP ${inferRes.status})`;
+          if (inferRes.status === 404) msg = "AI-tjener er ikke klar for denne versjonen. Edge function `varroa-infer` må deployes til Supabase først.";
+          if (inferRes.status === 500) msg = "AI-tjener feilet ved oppstart (mangler kanskje ROBOFLOW_INFERENCE_KEY secret).";
+          initialAIStatus = "FAILED";
+          initialAIError = msg + " (du kan trykke Prøv igjen senere når det er fikset)";
         }
-      })();
+      } catch (e) {
+        const m = e instanceof Error ? e.message : String(e);
+        initialAIStatus = "FAILED";
+        initialAIError = `Kunne ikke nå AI-tjener: ${m} (sjekk nettverk, eller prøv igjen senere)`;
+      }
 
       setAiPoll({
-        status: "PENDING",
+        status: initialAIStatus,
         ai_count: null,
         ai_confidence: null,
-        ai_error: null,
+        ai_error: initialAIError,
         imageNotes: imageNotesPayload,
       });
       setLastSubmission({
@@ -818,6 +824,21 @@ export default function Home() {
       const aKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ?? "";
       setAiPoll((p) => ({ ...p, status: "RUNNING", ai_error: null }));
       try {
+        await supabase
+          .from("varroa_submissions")
+          .update({
+            ai_status: "RUNNING",
+            ai_error: null,
+            ai_started_at: new Date().toISOString(),
+            ai_finished_at: null,
+            ai_count: null,
+            ai_confidence: null,
+          })
+          .eq("id", sid);
+      } catch {
+        /* ignore update failures; edge func may overwrite anyway */
+      }
+      try {
         const { data } = await supabase.auth.getSession();
         const jwtMaybe = data.session?.access_token ?? null;
         const headers: Record<string, string> = {
@@ -831,13 +852,16 @@ export default function Home() {
           body: JSON.stringify({ submission_id: sid, signed_images: [] }),
         });
         if (!res.ok) {
-          setAiPoll((p) => ({ ...p, status: "FAILED", ai_error: `HTTP ${res.status} ${res.statusText}` }));
+          let msg = `AI-tjener svarte ikke (HTTP ${res.status})`;
+          if (res.status === 404) msg = "AI-tjener er ikke klar for denne versjonen. Edge function `varroa-infer` må deployes til Supabase først.";
+          if (res.status === 500) msg = "AI-tjener feilet ved oppstart (mangler kanskje ROBOFLOW_INFERENCE_KEY secret).";
+          setAiPoll((p) => ({ ...p, status: "FAILED", ai_error: msg + " (du kan trykke Prøv igjen senere når det er fikset)" }));
         } else {
-          setAiPoll((p) => ({ ...p, status: "RUNNING" }));
+          setAiPoll((p) => ({ ...p, status: "RUNNING", ai_error: null }));
         }
       } catch (e) {
         const m = e instanceof Error ? e.message : String(e);
-        setAiPoll((p) => ({ ...p, status: "FAILED", ai_error: m }));
+        setAiPoll((p) => ({ ...p, status: "FAILED", ai_error: `Kunne ikke nå AI-tjener: ${m}` }));
       }
     };
 
@@ -879,7 +903,7 @@ export default function Home() {
           <div className="rounded-3xl bg-zinc-900 border border-zinc-800 p-6">
             <div className="text-2xl font-semibold">AI-analyse kjører</div>
             <div className="mt-2 text-zinc-300 text-sm">
-              Innsendingen er mottatt. Bildene analyseres nå av vår AI-modell. Dersom du ikke ser resultat umiddelbart, sjekk om noen minutter.
+              Innsendingen er mottatt. Bildene analyseres nå av vår AI-modell. Resultatet kommer vanligvis innen 5–10 sekunder per bilde.
             </div>
 
             {lastSubmission ? (
@@ -902,7 +926,7 @@ export default function Home() {
                     </div>
                   </div>
                   <div className="mt-2 text-xs text-sky-300/80">
-                    Dette tar vanligvis 5–30 sekunder per bilde. Hold fanen åpen, så kommer resultatene.
+                    Dette tar vanligvis 3–10 sekunder per bilde. Hold fanen åpen, så kommer resultatene.
                   </div>
                 </div>
               ) : null}

@@ -60,6 +60,13 @@ Deno.serve(async (req: Request) => {
       { status: 500, headers: { "Content-Type": "application/json" } },
     );
   }
+  if (!roboKey) {
+    // Fail FAST if Roboflow key is missing; don't even mark RUNNING so caller sees error immediately.
+    return new Response(
+      JSON.stringify({ error: "Missing ROBOFLOW_INFERENCE_KEY in Supabase Function Secrets. Run: supabase secrets set ROBOFLOW_INFERENCE_KEY=..." }),
+      { status: 500, headers: { "Content-Type": "application/json" } },
+    );
+  }
 
   let payload: { submission_id?: string; signed_images?: SignedImage[] } = {};
   try {
@@ -209,14 +216,23 @@ Deno.serve(async (req: Request) => {
         if (!roboKey) {
           throw new Error("ROBOFLOW_INFERENCE_KEY is not set in Supabase Function Secrets.");
         }
-        const resp = await fetch(roboUrl, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${roboKey}`,
-          },
-          body: JSON.stringify({ image: signedUrl }),
-        });
+        // Timeout each Roboflow call at 30s to avoid hanging edge functions (Roboflow usually answers in ~3s)
+        const ctrl = new AbortController();
+        const t = setTimeout(() => ctrl.abort("Roboflow call timed out after 30s"), 30000);
+        let resp: Response;
+        try {
+          resp = await fetch(roboUrl, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              Authorization: `Bearer ${roboKey}`,
+            },
+            body: JSON.stringify({ image: signedUrl }),
+            signal: ctrl.signal,
+          });
+        } finally {
+          clearTimeout(t);
+        }
         const text = await resp.text();
         try {
           roboResp = text ? JSON.parse(text) : {};
