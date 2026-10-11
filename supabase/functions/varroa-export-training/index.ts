@@ -239,11 +239,22 @@ Deno.serve(async (req: Request) => {
       : [];
     const imagePath = images[imageIndex];
     if (!imagePath) throw new Error("Missing image at index " + imageIndex);
-    const notesIn = Array.isArray((sub as { image_notes?: unknown }).image_notes)
-      ? ((sub as { image_notes: unknown[] }).image_notes as Note[])
+
+    // Admin-approved annotations live in the latest review's image_notes[].annotations,
+    // NOT in varroa_submissions.image_notes (which only holds AI ai_annotations_pending).
+    const { data: review, error: reviewErr } = await sbPrivileged
+      .from("varroa_submission_reviews")
+      .select("image_notes")
+      .eq("submission_id", submissionId)
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    if (reviewErr) throw new Error("Failed to load review: " + reviewErr.message);
+    const reviewNotes = review && Array.isArray((review as { image_notes?: unknown }).image_notes)
+      ? ((review as { image_notes: unknown[] }).image_notes as Note[])
       : [];
-    const noteObj = notesIn.find((n) => n && n.image_index === imageIndex) ??
-      notesIn[imageIndex] ??
+    const noteObj = reviewNotes.find((n) => n && n.image_index === imageIndex) ??
+      reviewNotes[imageIndex] ??
       ({ image_index: imageIndex, url: imagePath, annotations: [] } as Note);
     const adminAnnotations = Array.isArray(noteObj.annotations) ? noteObj.annotations : [];
     if (adminAnnotations.length === 0) {
