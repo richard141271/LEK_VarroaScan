@@ -242,7 +242,6 @@ function ZoomableAnnotatedImage({
   boxes,
   onBoxesChange,
   disabled,
-  showConfidence = true,
   aiBorderStyle = "dashed",
 }: {
   src: string;
@@ -250,7 +249,6 @@ function ZoomableAnnotatedImage({
   boxes: VarroaBoundingBox[];
   onBoxesChange: (next: VarroaBoundingBox[]) => void;
   disabled?: boolean;
-  showConfidence?: boolean;
   aiBorderStyle?: "dashed" | "solid";
 }) {
   const MIN_SCALE = 1;
@@ -311,7 +309,7 @@ function ZoomableAnnotatedImage({
     startTy: number;
     moved: boolean;
   } | null>(null);
-  const drawKeysPressed = useRef({ shift: false });
+  const drawKeysPressed = useRef({ shift: false, space: false });
   const clickCandidate = useRef<
     | { type: "box"; id: string; t: number; x: number; y: number; moved: boolean }
     | { type: "draw"; t: number; x: number; y: number; moved: boolean }
@@ -320,6 +318,7 @@ function ZoomableAnnotatedImage({
   const [hoveredBoxId, setHoveredBoxId] = useState<string | null>(null);
 
   // Track SHIFT held on window for "force pan during MARK mode".
+  // Track SPACE held on window for "draw box over existing box without deleting".
   useEffect(() => {
     const syncShiftFromEvent = (e: { shiftKey?: boolean; getModifierState?: (k: string) => boolean }) => {
       const fromEvent =
@@ -343,10 +342,16 @@ function ZoomableAnnotatedImage({
 
     const onKeyDown = (e: globalThis.KeyboardEvent) => {
       syncShiftFromEvent(e);
+      if (e.code === "Space" || e.key === " ") {
+        drawKeysPressed.current.space = true;
+      }
     };
     const onKeyUp = (e: globalThis.KeyboardEvent) => {
       const wasShift = drawKeysPressed.current.shift;
       syncShiftFromEvent(e);
+      if (e.code === "Space" || e.key === " ") {
+        drawKeysPressed.current.space = false;
+      }
       if (
         wasShift &&
         !drawKeysPressed.current.shift &&
@@ -359,9 +364,11 @@ function ZoomableAnnotatedImage({
     };
     const onBlur = () => {
       drawKeysPressed.current.shift = false;
+      drawKeysPressed.current.space = false;
     };
     const onFocus = () => {
       drawKeysPressed.current.shift = false;
+      drawKeysPressed.current.space = false;
     };
     window.addEventListener("keydown", onKeyDown);
     window.addEventListener("keyup", onKeyUp);
@@ -512,12 +519,13 @@ function ZoomableAnnotatedImage({
       return null;
     }
 
-    const mW = Math.max(4, Math.round(wPx * 0.55));
-    const mH = Math.max(4, Math.round(hPx * 0.55));
-    x1 = Math.max(0, x1 - mW);
-    y1 = Math.max(0, y1 - mH);
-    x2 = Math.min(iw - 1, x2 + mW);
-    y2 = Math.min(ih - 1, y2 + mH);
+    const MARGIN = 0.15;
+    const halfW = Math.max(MIN_BOX_PX / 2, Math.max(cx - x1, x2 - cx) * (1 + MARGIN));
+    const halfH = Math.max(MIN_BOX_PX / 2, Math.max(cy - y1, y2 - cy) * (1 + MARGIN));
+    x1 = Math.max(0, Math.round(cx - halfW));
+    y1 = Math.max(0, Math.round(cy - halfH));
+    x2 = Math.min(iw - 1, Math.round(cx + halfW));
+    y2 = Math.min(ih - 1, Math.round(cy + halfH));
     wPx = x2 - x1 + 1;
     hPx = y2 - y1 + 1;
 
@@ -679,6 +687,7 @@ function ZoomableAnnotatedImage({
     const shiftHeld =
       drawKeysPressed.current.shift ||
       (typeof e.shiftKey === "boolean" ? e.shiftKey : false);
+    const spaceHeld = drawKeysPressed.current.space;
     const wantPan = mode === "PAN" || shiftHeld || disabled;
 
     if (wantPan) {
@@ -697,7 +706,7 @@ function ZoomableAnnotatedImage({
       return;
     }
 
-    const hit = boxHitTest(e.clientX, e.clientY);
+    const hit = spaceHeld ? { hit: false, id: null } : boxHitTest(e.clientX, e.clientY);
     if (hit.hit && hit.id) {
       clickCandidate.current = {
         type: "box",
@@ -1046,6 +1055,7 @@ function ZoomableAnnotatedImage({
             ref={imgRef}
             src={src}
             alt={alt}
+            crossOrigin="anonymous"
             draggable={false}
             onLoad={handleImageLoad}
             className="h-auto max-h-full w-auto max-w-full object-contain select-none"
@@ -1059,18 +1069,14 @@ function ZoomableAnnotatedImage({
             const confLevel = isAI ? getConfidenceLevel(b.confidence) : null;
             let borderColorClass = "border-amber-400";
             let borderKindClass = "border-solid";
-            let badgeClass = "bg-amber-500 text-zinc-950";
             if (isAI) {
               borderKindClass = aiBorderStyle === "dashed" ? "border-dashed" : "border-solid";
               if (confLevel === "high") {
                 borderColorClass = "border-emerald-400";
-                badgeClass = "bg-emerald-500 text-white";
               } else if (confLevel === "medium") {
                 borderColorClass = "border-amber-400";
-                badgeClass = "bg-amber-400 text-zinc-950";
               } else {
                 borderColorClass = "border-red-400";
-                badgeClass = "bg-red-500 text-white";
               }
             }
             const hoverClass =
@@ -1109,17 +1115,6 @@ function ZoomableAnnotatedImage({
                       : {}),
                   }}
                 />
-                {showConfidence && isAI && b.confidence != null ? (
-                  <div
-                    className={[
-                      "absolute -top-6 left-0 rounded-md px-1.5 py-0.5 text-[10px] font-bold leading-none",
-                      badgeClass,
-                    ].join(" ")}
-                    style={{ whiteSpace: "nowrap" }}
-                  >
-                    {Math.round(b.confidence * 100)}%
-                  </div>
-                ) : null}
               </div>
             );
           })}
@@ -1190,9 +1185,10 @@ function ZoomableAnnotatedImage({
 
       <div className="mt-2 text-center text-[11px] text-zinc-500">
         ✏️ Markér-modus: hurtigklikk på en midd → lager en firkant automatisk. Trenger du
-        større boks: hold inne og dra. Klikk på en eksisterende firkant for å fjerne den. Hold
-        SHIFT for å panorere mens du merker. Mobil: knip to fingre for å zoome, tap for å merke,
-        dra for å tegne større.
+        større boks: hold inne og dra. Klikk på en eksisterende firkant for å fjerne den.
+        Hold <kbd className="rounded bg-zinc-800 px-1 text-zinc-300">SPACE</kbd> for å tegne en
+        ny boks oppå en eksisterende (uten å slette). Hold SHIFT for å panorere. Mobil: knip to
+        fingre for å zoome, tap for å merke, dra for å tegne større.
       </div>
     </div>
   );
@@ -1239,9 +1235,9 @@ export function ProductionSubmissionClient() {
   const [saveError, setSaveError] = useState<string | null>(null);
   const [saveOk, setSaveOk] = useState<string | null>(null);
   const [isSaving, setIsSaving] = useState(false);
-  const [showConfidence, setShowConfidence] = useState(true);
   const [exportToast, setExportToast] = useState<{ kind: "ok" | "err"; text: string } | null>(null);
   const initialAnnotationsRef = useRef<Record<number, VarroaBoundingBox[] | null>>({});
+  const lastLoadedIdRef = useRef<string | null>(null);
   const totalImages = images.length;
   const isLastImage = totalImages === 0 || selectedImage >= totalImages - 1;
   const currentDraft = imageDrafts[selectedImage] ?? createEmptyImageDraft(selectedImage);
@@ -1431,12 +1427,20 @@ export function ProductionSubmissionClient() {
       }
       // Snapshot initial annotations (deep-ish copy) so we can detect changes later
       // when deciding whether "Send to Roboflow training" has corrections to submit.
-      const snap: Record<number, VarroaBoundingBox[] | null> = {};
-      for (let idx = 0; idx < signedImages.length; idx += 1) {
-        const d = nextDrafts[idx];
-        snap[idx] = d?.annotations ? d.annotations.map((a) => ({ ...a })) : null;
+      // Only capture on first load for this submission; reloading after saving must
+      // not reset the baseline (otherwise "no corrections" shows falsely).
+      if (lastLoadedIdRef.current !== id) {
+        initialAnnotationsRef.current = {};
       }
-      initialAnnotationsRef.current = snap;
+      if (Object.keys(initialAnnotationsRef.current).length === 0) {
+        const snap: Record<number, VarroaBoundingBox[] | null> = {};
+        for (let idx = 0; idx < signedImages.length; idx += 1) {
+          const d = nextDrafts[idx];
+          snap[idx] = d?.annotations ? d.annotations.map((a) => ({ ...a })) : null;
+        }
+        initialAnnotationsRef.current = snap;
+        lastLoadedIdRef.current = id ?? null;
+      }
       setImageDrafts(nextDrafts);
     } catch (e) {
       const message =
@@ -2156,7 +2160,6 @@ export function ProductionSubmissionClient() {
                       boxes={currentDraft.annotations ?? []}
                       onBoxesChange={handleAnnotationsChange}
                       disabled={isArchived || isFinalized || isSaving || isLoading}
-                      showConfidence={showConfidence}
                       aiBorderStyle="dashed"
                     />
                   ) : (
@@ -2175,18 +2178,6 @@ export function ProductionSubmissionClient() {
                       className="h-10 rounded-xl border border-sky-800/60 bg-sky-950/40 px-3 text-xs font-semibold text-sky-100 active:opacity-90 disabled:opacity-50"
                     >
                       🧠 Kjør AI-telling på nytt
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setShowConfidence((v) => !v)}
-                      className={[
-                        "h-10 rounded-xl border px-3 text-xs font-semibold active:opacity-90",
-                        showConfidence
-                          ? "border-emerald-700 bg-emerald-950/40 text-emerald-100"
-                          : "border-zinc-700 bg-zinc-950 text-zinc-200",
-                      ].join(" ")}
-                    >
-                      📊 {showConfidence ? "Skjul konfidens-%" : "Vis konfidens-%"}
                     </button>
                     <button
                       type="button"

@@ -286,9 +286,6 @@ Deno.serve(async (req: Request) => {
       `&image=${encodeURIComponent(signedUrl)}` +
       `&name=${encodeURIComponent(`LEK-Varroascan_sub_${submissionId}_${imageIndex}`)}` +
       tagParams;
-    const annotateUrl =
-      `https://api.roboflow.com/dataset/${encodeURIComponent(projectId)}/annotate` +
-      `?api_key=${encodeURIComponent(roboDatasetKey)}`;
 
     const upResp = await fetch(uploadUrl, {
       method: "POST",
@@ -312,31 +309,24 @@ Deno.serve(async (req: Request) => {
       throw new Error("Roboflow upload returned no image id");
     }
 
-    // Annotations in multiple formats for robustness
-    const annotations: unknown[] = adminAnnotations.map((b) => {
+    const annotateUrl =
+      `https://api.roboflow.com/dataset/${encodeURIComponent(projectId)}/annotate/${encodeURIComponent(roboflowImageId)}` +
+      `?api_key=${encodeURIComponent(roboDatasetKey)}&name=anno.txt`;
+
+    // YOLO text format: one line per box: <class_index> <cx> <cy> <width> <height>
+    // All coordinates normalized 0..1. Class index 0 = "varroa" (the only class).
+    const yoloLines = adminAnnotations.map((b) => {
       const cx = Math.max(0, Math.min(1, b.x + b.w / 2));
       const cy = Math.max(0, Math.min(1, b.y + b.h / 2));
       const w = Math.max(0.0005, Math.min(1, b.w));
       const h = Math.max(0.0005, Math.min(1, b.h));
-      const x = Math.max(0, Math.min(1 - w, b.x));
-      const y = Math.max(0, Math.min(1 - h, b.y));
-      return {
-        x, y, width: w, height: h,
-        x_min: x, y_min: y, x_max: Math.min(1, x + w), y_max: Math.min(1, y + h),
-        cx, cy,
-        class: "varroa",
-        class_name: "varroa",
-        label: "varroa",
-      };
+      return `0 ${cx.toFixed(6)} ${cy.toFixed(6)} ${w.toFixed(6)} ${h.toFixed(6)}`;
     });
-    const annotateBody = {
-      id: roboflowImageId,
-      annotations,
-    };
+    const annotateBody = yoloLines.join("\n");
     const anResp = await fetch(annotateUrl, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(annotateBody),
+      headers: { "Content-Type": "text/plain" },
+      body: annotateBody,
     });
     const anText = await anResp.text();
     let anJson: unknown = null;
@@ -351,7 +341,7 @@ Deno.serve(async (req: Request) => {
     const payload = {
       roboflow_image_id: roboflowImageId,
       image_path: imagePath,
-      annotation_count: annotations.length,
+      annotation_count: yoloLines.length,
       upload_response: upJson ?? null,
       annotate_response: anJson ?? null,
     };
