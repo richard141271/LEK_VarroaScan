@@ -273,24 +273,26 @@ Deno.serve(async (req: Request) => {
     }
     signedUrl = signRes.data.signedUrl;
 
-    // Core Roboflow Dataset API
+    // Core Roboflow Dataset API.
+    // Endpoint format: https://api.roboflow.com/dataset/{dataset_id}/{action}
+    // Upload params (name, image, tag) go in the query string, NOT the JSON body.
+    // Omitting split -> image lands in the Annotate queue (unassigned) for double-check.
+    const tagParams = ["LEK-Varroascan"]
+      .map((t) => `&tag=${encodeURIComponent(t)}`)
+      .join("");
     const uploadUrl =
-      `https://api.roboflow.com/${encodeURIComponent(workspace)}/${encodeURIComponent(projectId)}/upload?api_key=${encodeURIComponent(roboDatasetKey)}`;
+      `https://api.roboflow.com/dataset/${encodeURIComponent(projectId)}/upload` +
+      `?api_key=${encodeURIComponent(roboDatasetKey)}` +
+      `&image=${encodeURIComponent(signedUrl)}` +
+      `&name=${encodeURIComponent(`LEK-Varroascan_sub_${submissionId}_${imageIndex}`)}` +
+      tagParams;
     const annotateUrl =
-      `https://api.roboflow.com/${encodeURIComponent(workspace)}/${encodeURIComponent(projectId)}/annotate?api_key=${encodeURIComponent(roboDatasetKey)}`;
+      `https://api.roboflow.com/dataset/${encodeURIComponent(projectId)}/annotate` +
+      `?api_key=${encodeURIComponent(roboDatasetKey)}`;
 
-    // Upload WITHOUT split -> image lands in Roboflow "Annotate" queue (unassigned/annotating)
-    // so admin can double-check annotations there BEFORE adding to dataset and training.
-    // Tagged "LEK-Varroascan" in the name + tags so we can identify origin in Roboflow.
-    const uploadBody: Record<string, unknown> = {
-      name: `LEK-Varroascan_sub_${submissionId}_${imageIndex}`,
-      image: signedUrl,
-      tags: ["LEK-Varroascan"],
-    };
     const upResp = await fetch(uploadUrl, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(uploadBody),
     });
     const upText = await upResp.text();
     let upJson: unknown = null;

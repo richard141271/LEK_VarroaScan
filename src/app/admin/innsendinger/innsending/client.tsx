@@ -1366,7 +1366,19 @@ export function ProductionSubmissionClient() {
 
       const ownReview = loadedReviews.find((review) => review.created_by === nextAccess.userId);
       const latestReview = ownReview ?? loadedReviews[0] ?? null;
-      const sharedImageNotes = latestReview?.image_notes;
+      // Admin-approved annotations live in the review's image_notes.
+      // AI suggestions (ai_annotations_pending) live in the submission's image_notes.
+      // Use the review's notes if it has annotations; otherwise fall back to the
+      // submission's AI suggestions so admin can see & correct them (active learning).
+      const reviewHasAnnotations =
+        latestReview?.image_notes != null &&
+        Array.isArray(latestReview.image_notes) &&
+        (latestReview.image_notes as unknown[]).some(
+          (n) => n && typeof n === "object" && Array.isArray((n as Record<string, unknown>).annotations) && (n as { annotations: unknown[] }).annotations.length > 0,
+        );
+      const sharedImageNotes = reviewHasAnnotations
+        ? latestReview!.image_notes
+        : loaded.image_notes;
       const nextImageIndex =
         typeof latestReview?.current_image_index === "number"
           ? latestReview.current_image_index
@@ -1383,6 +1395,19 @@ export function ProductionSubmissionClient() {
           imageReview,
           sharedImageNotes,
         );
+      }
+      // For images without a saved review yet, prefill with AI suggestions
+      // (ai_annotations_pending) from the submission's image_notes so admin
+      // can correct them instead of re-annotating from scratch (active learning).
+      for (let index = 0; index < signedImages.length; index += 1) {
+        const draft = nextDrafts[index];
+        if (draft.annotations.length === 0) {
+          const aiBoxes = extractAIPendingFromImageNotes(sharedImageNotes, index);
+          if (aiBoxes.length > 0) {
+            draft.annotations = aiBoxes;
+            draft.miteCountInput = String(aiBoxes.length);
+          }
+        }
       }
       if (loadedImageReviews.length === 0 && latestReview) {
         const fallbackIndex = Math.min(Math.max(nextImageIndex, 0), Math.max(signedImages.length - 1, 0));

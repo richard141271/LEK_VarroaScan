@@ -38,6 +38,7 @@ export type VarroaSubmissionRecord = {
   manual_mite_count: number | null;
   review_comment: string | null;
   current_role_owner: string | null;
+  image_notes: unknown;
 };
 
 export type VarroaSubmissionReview = {
@@ -312,5 +313,6 @@ export function getSubmissionSelect() {
     "manual_mite_count",
     "review_comment",
     "current_role_owner",
+    "image_notes",
   ].join(",");
 }
