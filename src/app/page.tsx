@@ -490,8 +490,7 @@ export default function Home() {
 
     void (async () => {
       const next: LocalImage[] = [];
-      const blockMessages: string[] = [];
-      const warningRejectedCount = { value: 0 };
+      const warningMessages: string[] = [];
 
       for (const file of picked) {
         let qr: ImageQualityResult;
@@ -508,9 +507,9 @@ export default function Home() {
           };
         }
 
-        if (!qualityCheckFailed && qr.level === "block") {
-          blockMessages.push(`${file.name}: ${qr.message}`);
-          continue;
+        const isLowQuality = !qualityCheckFailed && qr.level === "block";
+        if (isLowQuality) {
+          warningMessages.push(`${file.name}: ${qr.message} (Bildet sendes likevel – du kan få dårligere resultat.)`);
         }
 
         next.push({
@@ -520,12 +519,12 @@ export default function Home() {
           note: "",
           noteOpen: false,
           quality: qr.quality,
-          qualityPassedForced: qr.level === "warning" || qualityCheckFailed,
+          qualityPassedForced: qr.level === "warning" || qr.level === "block" || qualityCheckFailed,
         });
       }
 
-      if (blockMessages.length > 0) {
-        setError(blockMessages.join("\n\n"));
+      if (warningMessages.length > 0) {
+        setError(warningMessages.join("\n\n"));
       }
 
       if (next.length > 0) {

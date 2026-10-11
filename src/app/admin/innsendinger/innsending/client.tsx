@@ -255,7 +255,7 @@ function ZoomableAnnotatedImage({
 }) {
   const MIN_SCALE = 1;
   const MAX_SCALE = 10;
-  const DEFAULT_CLICK_BOX_SIZE = 0.010;
+  const DEFAULT_CLICK_BOX_SIZE = 0.025;
 
   const containerRef = useRef<HTMLDivElement | null>(null);
   const imgRef = useRef<HTMLImageElement | null>(null);
@@ -432,27 +432,32 @@ function ZoomableAnnotatedImage({
     const iw = sz.w;
     const ih = sz.h;
     const data = id.data;
-    const LUM_THRESHOLD = 160;
-    const isDark = (px: number, py: number) => {
-      if (px < 0 || py < 0 || px >= iw || py >= ih) return false;
-      const off = (py * iw + px) * 4;
-      const r = data[off];
-      const g = data[off + 1];
-      const b = data[off + 2];
-      const lum = 0.299 * r + 0.587 * g + 0.114 * b;
-      return lum < LUM_THRESHOLD;
-    };
 
     let cx = Math.round(normX * iw);
     let cy = Math.round(normY * ih);
     cx = Math.max(2, Math.min(iw - 3, cx));
     cy = Math.max(2, Math.min(ih - 3, cy));
 
-    const MAX_REGION = Math.max(2500, Math.round((iw * ih) / 400));
+    const idx0 = cy * iw + cx;
+    const off0 = idx0 * 4;
+    const seedR = data[off0];
+    const seedG = data[off0 + 1];
+    const seedB = data[off0 + 2];
 
-    if (!isDark(cx, cy)) {
-      return null;
-    }
+    const COLOR_TOL = 55;
+    const isSimilar = (px: number, py: number) => {
+      if (px < 0 || py < 0 || px >= iw || py >= ih) return false;
+      const off = (py * iw + px) * 4;
+      const r = data[off];
+      const g = data[off + 1];
+      const b = data[off + 2];
+      const dr = r - seedR;
+      const dg = g - seedG;
+      const db = b - seedB;
+      return dr * dr + dg * dg + db * db <= COLOR_TOL * COLOR_TOL;
+    };
+
+    const MAX_REGION = Math.max(4000, Math.round((iw * ih) / 250));
 
     let v = visitedGenRef.current;
     if (!v || v.w !== iw || v.h !== ih) {
@@ -464,7 +469,6 @@ function ZoomableAnnotatedImage({
     const visited = v.array;
 
     const stack: number[] = [];
-    const idx0 = cy * iw + cx;
     stack.push(idx0);
     visited[idx0] = gen;
 
@@ -493,7 +497,7 @@ function ZoomableAnnotatedImage({
           const nIdx = ny * iw + nx;
           if (visited[nIdx] === gen) continue;
           visited[nIdx] = gen;
-          if (isDark(nx, ny)) {
+          if (isSimilar(nx, ny)) {
             stack.push(nIdx);
           }
         }
@@ -508,8 +512,8 @@ function ZoomableAnnotatedImage({
       return null;
     }
 
-    const mW = Math.max(3, Math.round(wPx * 0.35));
-    const mH = Math.max(3, Math.round(hPx * 0.35));
+    const mW = Math.max(4, Math.round(wPx * 0.55));
+    const mH = Math.max(4, Math.round(hPx * 0.55));
     x1 = Math.max(0, x1 - mW);
     y1 = Math.max(0, y1 - mH);
     x2 = Math.min(iw - 1, x2 + mW);

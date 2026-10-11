@@ -250,13 +250,14 @@ Deno.serve(async (req: Request) => {
       `https://api.roboflow.com/${encodeURIComponent(workspace)}/${encodeURIComponent(projectId)}/upload?api_key=${encodeURIComponent(roboDatasetKey)}`;
     const annotateUrl =
       `https://api.roboflow.com/${encodeURIComponent(workspace)}/${encodeURIComponent(projectId)}/annotate?api_key=${encodeURIComponent(roboDatasetKey)}`;
-    const split = "train";
 
-    // Roboflow upload (name + split + image URL as hosted)
+    // Upload WITHOUT split -> image lands in Roboflow "Annotate" queue (unassigned/annotating)
+    // so admin can double-check annotations there BEFORE adding to dataset and training.
+    // Tagged "LEK-Varroascan" in the name + tags so we can identify origin in Roboflow.
     const uploadBody: Record<string, unknown> = {
-      name: `sub_${submissionId}_${imageIndex}`,
-      split,
+      name: `LEK-Varroascan_sub_${submissionId}_${imageIndex}`,
       image: signedUrl,
+      tags: ["LEK-Varroascan"],
     };
     const upResp = await fetch(uploadUrl, {
       method: "POST",
