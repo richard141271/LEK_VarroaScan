@@ -107,10 +107,11 @@ Deno.serve(async (req: Request) => {
     if (jwt === sbServiceRole || jwt === (Deno.env.get("SUPABASE_SERVICE_KEY") ?? "")) {
       adminUserId = "service-role";
     } else {
-      const sbAnon = createClient(sbUrl, jwt, {
-        auth: { persistSession: false, autoRefreshToken: false, global: { headers: { Authorization: `Bearer ${jwt}` } } },
+      const sbAnon = createClient(sbUrl, sbServiceRole, {
+        auth: { persistSession: false, autoRefreshToken: false },
+        global: { headers: { Authorization: `Bearer ${jwt}` } },
       });
-      const { data: userRes } = await sbAnon.auth.getUser(jwt);
+      const { data: userRes } = await sbAnon.auth.getUser();
       const uid = userRes?.user?.id ?? null;
       const email = String(userRes?.user?.email ?? "").trim().toLowerCase();
       if (uid) {
