@@ -357,7 +357,7 @@ Deno.serve(async (req: Request) => {
       .eq("id", queueId!);
     if (updateErr) throw new Error(updateErr.message);
 
-    return jsonResp({ ok: true, queue_id: queueId, roboflow_image_id: roboflowImageId, annotations_sent: annotations.length });
+    return jsonResp({ ok: true, queue_id: queueId, roboflow_image_id: roboflowImageId, annotations_sent: yoloLines.length });
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     try { await markFailed(msg); } catch { /* swallow */ }
