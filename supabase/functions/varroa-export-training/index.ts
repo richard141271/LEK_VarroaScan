@@ -33,6 +33,8 @@ type Note = {
 
 const DEFAULT_WORKSPACE = "lek-vision-lab";
 
+const SUPER_ADMIN_EMAILS = new Set(["richard141271@gmail.com"]);
+
 function isTruthyRole(r: unknown): boolean {
   return r === "SUPERADMIN" || r === "FAGANSVARLIG";
 }
@@ -110,16 +112,30 @@ Deno.serve(async (req: Request) => {
       });
       const { data: userRes } = await sbAnon.auth.getUser(jwt);
       const uid = userRes?.user?.id ?? null;
+      const email = String(userRes?.user?.email ?? "").trim().toLowerCase();
       if (uid) {
-        const { data: roles, error: roleErr } = await sbPrivileged
-          .from("varroa_user_roles")
-          .select("role")
-          .eq("user_id", uid)
-          .is("deleted_at", null)
-          .maybeSingle();
-        if (roleErr) console.warn("role lookup err", roleErr);
-        const role = (roles as { role: string } | null)?.role ?? null;
-        if (isTruthyRole(role)) adminUserId = uid;
+        if (SUPER_ADMIN_EMAILS.has(email)) {
+          adminUserId = uid;
+        } else {
+          const { data: roles, error: roleErr } = await sbPrivileged
+            .from("varroa_user_roles")
+            .select("role")
+            .eq("user_id", uid)
+            .is("deleted_at", null)
+            .maybeSingle();
+          if (roleErr) console.warn("role lookup err", roleErr);
+          const role = (roles as { role: string } | null)?.role ?? null;
+          if (isTruthyRole(role)) {
+            adminUserId = uid;
+          } else {
+            const { data: adm } = await sbPrivileged
+              .from("varroa_admins")
+              .select("user_id")
+              .eq("user_id", uid)
+              .maybeSingle();
+            if (adm?.user_id) adminUserId = uid;
+          }
+        }
       }
     }
   }
