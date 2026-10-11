@@ -1204,7 +1204,6 @@ export default function Home() {
                 ref={cameraInputRef}
                 type="file"
                 accept="image/*"
-                capture="environment"
                 className="hidden"
                 onChange={(e) => {
                   onPickImages(e.target.files, { reopenCamera: true });
@@ -1217,7 +1216,7 @@ export default function Home() {
                 onClick={() => cameraInputRef.current?.click()}
                 className="mt-2 flex h-14 w-full items-center justify-center rounded-2xl bg-amber-400 px-4 text-base font-semibold text-zinc-950 active:opacity-90"
               >
-                {"\uD83D\uDCF7"} Ta bilde
+                {"\uD83D\uDCF7"} Ta bilde / Velg bilde
               </button>
 
               <div className="mt-3 space-y-3">
