@@ -455,26 +455,42 @@ function ZoomableAnnotatedImage({
     cx = Math.max(2, Math.min(iw - 3, cx));
     cy = Math.max(2, Math.min(ih - 3, cy));
 
-    const idx0 = cy * iw + cx;
-    const off0 = idx0 * 4;
-    const seedR = data[off0];
-    const seedG = data[off0 + 1];
-    const seedB = data[off0 + 2];
-
-    const COLOR_TOL = 55;
-    const isSimilar = (px: number, py: number) => {
-      if (px < 0 || py < 0 || px >= iw || py >= ih) return false;
+    const lum = (px: number, py: number) => {
       const off = (py * iw + px) * 4;
-      const r = data[off];
-      const g = data[off + 1];
-      const b = data[off + 2];
-      const dr = r - seedR;
-      const dg = g - seedG;
-      const db = b - seedB;
-      return dr * dr + dg * dg + db * db <= COLOR_TOL * COLOR_TOL;
+      return 0.299 * data[off] + 0.587 * data[off + 1] + 0.114 * data[off + 2];
     };
 
-    const MAX_REGION = Math.max(4000, Math.round((iw * ih) / 250));
+    // Sample background luminance from a ring around the click point.
+    // Mites are dark objects on a lighter background, so we find all pixels
+    // significantly darker than the local background.
+    const ringRadii = [Math.max(25, Math.round(Math.min(iw, ih) * 0.04)), Math.max(40, Math.round(Math.min(iw, ih) * 0.07))];
+    const bgSamples: number[] = [];
+    for (let a = 0; a < 360; a += 15) {
+      const rad = (a * Math.PI) / 180;
+      for (const r of ringRadii) {
+        const sx = Math.round(cx + r * Math.cos(rad));
+        const sy = Math.round(cy + r * Math.sin(rad));
+        if (sx >= 0 && sy >= 0 && sx < iw && sy < ih) {
+          bgSamples.push(lum(sx, sy));
+        }
+      }
+    }
+    bgSamples.sort((a, b) => a - b);
+    const bgLum = bgSamples.length > 0
+      ? bgSamples[Math.floor(bgSamples.length * 0.6)]
+      : 200;
+
+    // Threshold: pixels darker than (background - margin) are considered mite.
+    // Use a relative margin so it works on both light and dark backgrounds.
+    const DARK_MARGIN = Math.max(18, bgLum * 0.18);
+    const threshold = bgLum - DARK_MARGIN;
+
+    const isDark = (px: number, py: number) => {
+      if (px < 0 || py < 0 || px >= iw || py >= ih) return false;
+      return lum(px, py) < threshold;
+    };
+
+    const MAX_REGION = Math.max(8000, Math.round((iw * ih) / 120));
 
     let v = visitedGenRef.current;
     if (!v || v.w !== iw || v.h !== ih) {
@@ -485,14 +501,38 @@ function ZoomableAnnotatedImage({
     const gen = v.gen;
     const visited = v.array;
 
-    const stack: number[] = [];
-    stack.push(idx0);
-    visited[idx0] = gen;
+    // If the click point itself is not dark (user clicked on a light spot),
+    // search outward in a small spiral to find the nearest dark pixel.
+    let startX = cx;
+    let startY = cy;
+    if (!isDark(cx, cy)) {
+      let found = false;
+      for (let r = 1; r <= 25 && !found; r++) {
+        for (let dy = -r; dy <= r && !found; dy++) {
+          for (let dx = -r; dx <= r && !found; dx++) {
+            if (Math.abs(dx) !== r && Math.abs(dy) !== r) continue;
+            const sx = cx + dx;
+            const sy = cy + dy;
+            if (isDark(sx, sy)) {
+              startX = sx;
+              startY = sy;
+              found = true;
+            }
+          }
+        }
+      }
+      if (!found) return null;
+    }
 
-    let x1 = cx;
-    let y1 = cy;
-    let x2 = cx;
-    let y2 = cy;
+    const stack: number[] = [];
+    const startIdx = startY * iw + startX;
+    stack.push(startIdx);
+    visited[startIdx] = gen;
+
+    let x1 = startX;
+    let y1 = startY;
+    let x2 = startX;
+    let y2 = startY;
     let count = 0;
 
     while (stack.length > 0 && count < MAX_REGION) {
@@ -514,7 +554,7 @@ function ZoomableAnnotatedImage({
           const nIdx = ny * iw + nx;
           if (visited[nIdx] === gen) continue;
           visited[nIdx] = gen;
-          if (isSimilar(nx, ny)) {
+          if (isDark(nx, ny)) {
             stack.push(nIdx);
           }
         }
@@ -529,6 +569,8 @@ function ZoomableAnnotatedImage({
       return null;
     }
 
+    // Recenter on the original click point so the box is centered where the user clicked,
+    // with size large enough to cover the detected dark region + padding.
     const MARGIN = 0.28;
     const halfW = Math.max(MIN_BOX_PX / 2, Math.max(cx - x1, x2 - cx) * (1 + MARGIN));
     const halfH = Math.max(MIN_BOX_PX / 2, Math.max(cy - y1, y2 - cy) * (1 + MARGIN));

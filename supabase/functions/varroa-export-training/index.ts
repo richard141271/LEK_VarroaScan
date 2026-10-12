@@ -280,11 +280,12 @@ Deno.serve(async (req: Request) => {
     const tagParams = ["LEK-Varroascan"]
       .map((t) => `&tag=${encodeURIComponent(t)}`)
       .join("");
+    const imageName = `LEK-Varroascan_${submissionId.slice(0, 8)}_img${imageIndex}_${Date.now()}`;
     const uploadUrl =
       `https://api.roboflow.com/dataset/${encodeURIComponent(projectId)}/upload` +
       `?api_key=${encodeURIComponent(roboDatasetKey)}` +
       `&image=${encodeURIComponent(signedUrl)}` +
-      `&name=${encodeURIComponent(`LEK-Varroascan_sub_${submissionId}_${imageIndex}`)}` +
+      `&name=${encodeURIComponent(imageName)}` +
       tagParams;
 
     const upResp = await fetch(uploadUrl, {
@@ -309,9 +310,11 @@ Deno.serve(async (req: Request) => {
       throw new Error("Roboflow upload returned no image id");
     }
 
+    // overwrite=true so re-sending the same image replaces old annotations
+    // instead of failing with HTTP 409 "Image was already annotated".
     const annotateUrl =
       `https://api.roboflow.com/dataset/${encodeURIComponent(projectId)}/annotate/${encodeURIComponent(roboflowImageId)}` +
-      `?api_key=${encodeURIComponent(roboDatasetKey)}&name=anno.txt`;
+      `?api_key=${encodeURIComponent(roboDatasetKey)}&name=anno.txt&overwrite=true`;
 
     // YOLO text format: one line per box: <class_index> <cx> <cy> <width> <height>
     // All coordinates normalized 0..1. Class index 0 = "varroa" (the only class).
