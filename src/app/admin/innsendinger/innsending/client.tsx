@@ -345,6 +345,16 @@ function ZoomableAnnotatedImage({
       if (e.code === "Space" || e.key === " ") {
         drawKeysPressed.current.space = true;
       }
+      const tag = (e.target as HTMLElement | null)?.tagName;
+      const isEditable =
+        tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" ||
+        (e.target as HTMLElement | null)?.isContentEditable;
+      if (isEditable) return;
+      if (e.key === "1") {
+        zoomBy(1 / 1.5);
+      } else if (e.key === "2") {
+        zoomBy(1.5);
+      }
     };
     const onKeyUp = (e: globalThis.KeyboardEvent) => {
       const wasShift = drawKeysPressed.current.shift;
@@ -519,7 +529,7 @@ function ZoomableAnnotatedImage({
       return null;
     }
 
-    const MARGIN = 0.15;
+    const MARGIN = 0.28;
     const halfW = Math.max(MIN_BOX_PX / 2, Math.max(cx - x1, x2 - cx) * (1 + MARGIN));
     const halfH = Math.max(MIN_BOX_PX / 2, Math.max(cy - y1, y2 - cy) * (1 + MARGIN));
     x1 = Math.max(0, Math.round(cx - halfW));
@@ -731,12 +741,7 @@ function ZoomableAnnotatedImage({
     };
     dragState.current = null;
     pinchState.current = null;
-    setDrawing({
-      startX: norm.x,
-      startY: norm.y,
-      endX: norm.x,
-      endY: norm.y,
-    });
+    setDrawing(null);
   };
 
   const onPointerMove = (e: PointerEvent<HTMLDivElement>) => {
@@ -781,23 +786,13 @@ function ZoomableAnnotatedImage({
       const dy = e.clientY - clickCandidate.current.y;
       if (Math.hypot(dx, dy) > 4) {
         clickCandidate.current.moved = true;
-        if (clickCandidate.current.type === "box") {
+        if (
+          clickCandidate.current.type === "box" ||
+          clickCandidate.current.type === "draw"
+        ) {
           startPanFromPointer(e.clientX, e.clientY);
         }
       }
-    }
-
-    if (drawing && pointers.current.size === 1 && pinchState.current == null) {
-      const n = clientToNormalized(e.clientX, e.clientY);
-      if (n) {
-        setDrawing({
-          startX: drawing.startX,
-          startY: drawing.startY,
-          endX: Math.max(0, Math.min(1, n.x)),
-          endY: Math.max(0, Math.min(1, n.y)),
-        });
-      }
-      return;
     }
 
     if (pointers.current.size === 1 && dragState.current && pinchState.current == null) {
@@ -870,29 +865,6 @@ function ZoomableAnnotatedImage({
       }
     }
     clickCandidate.current = null;
-
-    if (commitDraw && drawing && pointers.current.size === 0) {
-      const b = drawing;
-      setDrawing(null);
-      const x = Math.min(b.startX, b.endX);
-      const y = Math.min(b.startY, b.endY);
-      const w = Math.max(b.endX, b.startX) - x;
-      const h = Math.max(b.endY, b.startY) - y;
-      if (w > 0.001 && h > 0.001) {
-        const id = cryptoRandomId();
-        const next: VarroaBoundingBox = {
-          id,
-          class_name: "varroa_mite",
-          x: Math.max(0, Math.min(1, x)),
-          y: Math.max(0, Math.min(1, y)),
-          w: Math.max(0.0005, Math.min(1, w)),
-          h: Math.max(0.0005, Math.min(1, h)),
-        };
-        onBoxesChange([...boxes, next]);
-      }
-      dragState.current = null;
-      return;
-    }
 
     if (!commitDraw) {
       setDrawing(null);
@@ -1184,11 +1156,13 @@ function ZoomableAnnotatedImage({
       </div>
 
       <div className="mt-2 text-center text-[11px] text-zinc-500">
-        ✏️ Markér-modus: hurtigklikk på en midd → lager en firkant automatisk. Trenger du
-        større boks: hold inne og dra. Klikk på en eksisterende firkant for å fjerne den.
-        Hold <kbd className="rounded bg-zinc-800 px-1 text-zinc-300">SPACE</kbd> for å tegne en
-        ny boks oppå en eksisterende (uten å slette). Hold SHIFT for å panorere. Mobil: knip to
-        fingre for å zoome, tap for å merke, dra for å tegne større.
+        ✏️ Klikk på en midd → lager en firkant automatisk. Dra med musa for å forflytte deg rundt
+        i bildet (som i Roboflow). Klikk på en eksisterende firkant for å fjerne den. Hold{" "}
+        <kbd className="rounded bg-zinc-800 px-1 text-zinc-300">SPACE</kbd> for å tegne en ny boks
+        oppå en eksisterende (uten å slette). Zoom: tast{" "}
+        <kbd className="rounded bg-zinc-800 px-1 text-zinc-300">1</kbd> (ut) /{" "}
+        <kbd className="rounded bg-zinc-800 px-1 text-zinc-300">2</kbd> (inn), musehjul eller
+        knappene under. Mobil: knip to fingre for å zoome, dra for å forflytte, tap for å merke.
       </div>
     </div>
   );
