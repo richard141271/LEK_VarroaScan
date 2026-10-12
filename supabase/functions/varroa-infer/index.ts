@@ -229,7 +229,7 @@ Deno.serve(async (req: Request) => {
       }
 
       let roboResp: unknown = null;
-      let predictions: BB[] = [];
+      const predictions: BB[] = [];
       try {
         if (!roboKey) {
           throw new Error("ROBOFLOW_INFERENCE_KEY is not set in Supabase Function Secrets.");
