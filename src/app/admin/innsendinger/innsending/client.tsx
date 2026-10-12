@@ -392,6 +392,29 @@ function ZoomableAnnotatedImage({
     };
   }, [mode, disabled]);
 
+  // Native non-passive wheel listener so preventDefault works (React onWheel may be passive).
+  // Matches Roboflow: swipe/scroll = pan, trackpad pinch (ctrlKey) = zoom.
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    const handler = (e: WheelEvent) => {
+      e.preventDefault();
+      if (e.ctrlKey) {
+        const factor = e.deltaY < 0 ? 1.15 : 1 / 1.15;
+        applyZoomAt(e.clientX, e.clientY, viewRef.current.scale * factor);
+        return;
+      }
+      const cur = viewRef.current;
+      if (cur.scale <= 1.001) return;
+      const [txN, tyN] = clampTxTy(cur.scale, cur.tx - e.deltaX, cur.ty - e.deltaY);
+      viewRef.current = { ...cur, tx: txN, ty: tyN };
+      setTx(txN);
+      setTy(tyN);
+    };
+    el.addEventListener("wheel", handler, { passive: false });
+    return () => el.removeEventListener("wheel", handler);
+  }, []);
+
   const getImageDisplayRect = () => {
     const img = imgRef.current;
     const box = containerRef.current;
@@ -674,10 +697,25 @@ function ZoomableAnnotatedImage({
   };
 
   const onWheel = (e: ReactWheelEvent<HTMLDivElement>) => {
-    if (viewRef.current.scale === 1 && e.deltaY > 0) return;
     e.preventDefault();
-    const factor = e.deltaY < 0 ? 1.15 : 1 / 1.15;
-    applyZoomAt(e.clientX, e.clientY, viewRef.current.scale * factor);
+    // ctrlKey=true means trackpad pinch-zoom → zoom.
+    // Otherwise (Magic Mouse swipe, trackpad two-finger scroll, mouse wheel) → pan,
+    // matching Roboflow's interaction model.
+    if (e.ctrlKey) {
+      const factor = e.deltaY < 0 ? 1.15 : 1 / 1.15;
+      applyZoomAt(e.clientX, e.clientY, viewRef.current.scale * factor);
+      return;
+    }
+    const cur = viewRef.current;
+    if (cur.scale <= 1.001) return;
+    const [txN, tyN] = clampTxTy(
+      cur.scale,
+      cur.tx - e.deltaX,
+      cur.ty - e.deltaY,
+    );
+    viewRef.current = { ...cur, tx: txN, ty: tyN };
+    setTx(txN);
+    setTy(tyN);
   };
 
   const startPanFromPointer = (clientX: number, clientY: number) => {
@@ -1044,7 +1082,6 @@ function ZoomableAnnotatedImage({
 
       <div
         ref={containerRef}
-        onWheel={onWheel}
         onPointerDown={onPointerDown}
         onPointerMove={onPointerMove}
         onPointerUp={onPointerUp}
