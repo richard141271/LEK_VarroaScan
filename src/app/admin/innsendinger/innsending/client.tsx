@@ -253,7 +253,7 @@ function ZoomableAnnotatedImage({
 }) {
   const MIN_SCALE = 1;
   const MAX_SCALE = 10;
-  const DEFAULT_CLICK_BOX_SIZE = 0.025;
+  const DEFAULT_CLICK_BOX_SIZE = 0.04;
 
   const containerRef = useRef<HTMLDivElement | null>(null);
   const imgRef = useRef<HTMLImageElement | null>(null);
@@ -269,7 +269,7 @@ function ZoomableAnnotatedImage({
   const [scale, setScale] = useState(1);
   const [tx, setTx] = useState(0);
   const [ty, setTy] = useState(0);
-  const [mode, setMode] = useState<"MARK" | "PAN">("MARK");
+  const [tool, setTool] = useState<"pan" | "auto" | "draw">("auto");
   const [drawing, setDrawing] = useState<{
     startX: number;
     startY: number;
@@ -313,6 +313,7 @@ function ZoomableAnnotatedImage({
   const clickCandidate = useRef<
     | { type: "box"; id: string; t: number; x: number; y: number; moved: boolean }
     | { type: "draw"; t: number; x: number; y: number; moved: boolean }
+    | { type: "drawBox"; t: number; x: number; y: number; moved: boolean }
     | null
   >(null);
   const [hoveredBoxId, setHoveredBoxId] = useState<string | null>(null);
@@ -365,7 +366,7 @@ function ZoomableAnnotatedImage({
       if (
         wasShift &&
         !drawKeysPressed.current.shift &&
-        mode === "MARK" &&
+        tool !== "pan" &&
         dragState.current != null &&
         !disabled
       ) {
@@ -390,7 +391,7 @@ function ZoomableAnnotatedImage({
       window.removeEventListener("blur", onBlur, true);
       window.removeEventListener("focus", onFocus, true);
     };
-  }, [mode, disabled]);
+  }, [tool, disabled]);
 
   // Native non-passive wheel listener so preventDefault works (React onWheel may be passive).
   // Matches Roboflow: swipe/scroll = pan, trackpad pinch (ctrlKey) = zoom.
@@ -587,20 +588,37 @@ function ZoomableAnnotatedImage({
     let wPx = x2 - x1 + 1;
     let hPx = y2 - y1 + 1;
 
-    const MIN_BOX_PX = 6;
-    if (wPx < MIN_BOX_PX || hPx < MIN_BOX_PX) {
-      return null;
+    const MIN_BOX_PX = 10;
+    const regionW = x2 - x1 + 1;
+    const regionH = y2 - y1 + 1;
+
+    // If the detected dark region is too small, fall back to a default-sized box
+    // centered on the click point.
+    if (regionW < MIN_BOX_PX || regionH < MIN_BOX_PX) {
+      const aspect = iw / Math.max(1, ih);
+      const wNorm = DEFAULT_CLICK_BOX_SIZE;
+      const hNorm = wNorm * Math.max(0.0001, aspect);
+      const hx = wNorm / 2;
+      const hy = hNorm / 2;
+      const ncx = Math.max(hx, Math.min(1 - hx, normX));
+      const ncy = Math.max(hy, Math.min(1 - hy, normY));
+      return {
+        x: ncx - hx,
+        y: ncy - hy,
+        w: wNorm,
+        h: hNorm,
+      };
     }
 
-    // Recenter on the original click point so the box is centered where the user clicked,
-    // with size large enough to cover the detected dark region + padding.
-    const MARGIN = 0.28;
-    const halfW = Math.max(MIN_BOX_PX / 2, Math.max(cx - x1, x2 - cx) * (1 + MARGIN));
-    const halfH = Math.max(MIN_BOX_PX / 2, Math.max(cy - y1, y2 - cy) * (1 + MARGIN));
-    x1 = Math.max(0, Math.round(cx - halfW));
-    y1 = Math.max(0, Math.round(cy - halfH));
-    x2 = Math.min(iw - 1, Math.round(cx + halfW));
-    y2 = Math.min(ih - 1, Math.round(cy + halfH));
+    // Use the full extent of the detected region, with padding around it.
+    // This ensures the entire mite is covered, not just the part near the click.
+    const MARGIN = 0.35;
+    const padW = Math.round(regionW * MARGIN);
+    const padH = Math.round(regionH * MARGIN);
+    x1 = Math.max(0, x1 - padW);
+    y1 = Math.max(0, y1 - padH);
+    x2 = Math.min(iw - 1, x2 + padW);
+    y2 = Math.min(ih - 1, y2 + padH);
     wPx = x2 - x1 + 1;
     hPx = y2 - y1 + 1;
 
@@ -778,7 +796,7 @@ function ZoomableAnnotatedImage({
       drawKeysPressed.current.shift ||
       (typeof e.shiftKey === "boolean" ? e.shiftKey : false);
     const spaceHeld = drawKeysPressed.current.space;
-    const wantPan = mode === "PAN" || shiftHeld || disabled;
+    const wantPan = tool === "pan" || shiftHeld || disabled;
 
     if (wantPan) {
       startPanFromPointer(e.clientX, e.clientY);
@@ -796,6 +814,22 @@ function ZoomableAnnotatedImage({
       return;
     }
 
+    // DRAW tool: start drawing a rectangle box
+    if (tool === "draw") {
+      clickCandidate.current = {
+        type: "drawBox",
+        t: performance.now(),
+        x: e.clientX,
+        y: e.clientY,
+        moved: false,
+      };
+      setDrawing({ startX: norm.x, startY: norm.y, endX: norm.x, endY: norm.y });
+      dragState.current = null;
+      pinchState.current = null;
+      return;
+    }
+
+    // AUTO tool: click = auto-detect box. If click lands on existing box, delete it (unless SPACE held)
     const hit = spaceHeld ? { hit: false, id: null } : boxHitTest(e.clientX, e.clientY);
     if (hit.hit && hit.id) {
       clickCandidate.current = {
@@ -866,12 +900,27 @@ function ZoomableAnnotatedImage({
       const dy = e.clientY - clickCandidate.current.y;
       if (Math.hypot(dx, dy) > 4) {
         clickCandidate.current.moved = true;
-        if (
+        if (clickCandidate.current.type === "drawBox") {
+          // DRAW tool: update the rectangle being drawn
+          const norm = clientToNormalized(e.clientX, e.clientY);
+          if (norm && drawing) {
+            setDrawing({ ...drawing, endX: norm.x, endY: norm.y });
+          }
+        } else if (
           clickCandidate.current.type === "box" ||
           clickCandidate.current.type === "draw"
         ) {
+          // AUTO tool: drag after click = pan
           startPanFromPointer(e.clientX, e.clientY);
         }
+      }
+    }
+
+    // DRAW tool: keep updating rect while dragging even after moved=true
+    if (clickCandidate.current?.type === "drawBox" && clickCandidate.current.moved) {
+      const norm = clientToNormalized(e.clientX, e.clientY);
+      if (norm && drawing) {
+        setDrawing({ ...drawing, endX: norm.x, endY: norm.y });
       }
     }
 
@@ -890,58 +939,87 @@ function ZoomableAnnotatedImage({
 
     if (pointers.current.size < 2) pinchState.current = null;
 
-    if (commitDraw && clickCandidate.current && !clickCandidate.current.moved) {
+    if (commitDraw && clickCandidate.current) {
       const cand = clickCandidate.current;
-      clickCandidate.current = null;
-      if (cand.type === "box") {
-        onBoxesChange(boxes.filter((b) => b.id !== cand.id));
+
+      // DRAW tool: create box from dragged rectangle
+      if (cand.type === "drawBox") {
+        clickCandidate.current = null;
+        if (cand.moved && drawing) {
+          const x1 = Math.min(drawing.startX, drawing.endX);
+          const y1 = Math.min(drawing.startY, drawing.endY);
+          const x2 = Math.max(drawing.startX, drawing.endX);
+          const y2 = Math.max(drawing.startY, drawing.endY);
+          const w = Math.max(0.002, x2 - x1);
+          const h = Math.max(0.002, y2 - y1);
+          const id = cryptoRandomId();
+          const next: VarroaBoundingBox = {
+            id,
+            class_name: "varroa_mite",
+            x: x1,
+            y: y1,
+            w,
+            h,
+          };
+          onBoxesChange([...boxes, next]);
+        }
         setDrawing(null);
         dragState.current = null;
         return;
       }
-      if (cand.type === "draw") {
-        setDrawing(null);
-        const norm = clientToNormalized(cand.x, cand.y);
-        if (norm) {
-          let rect: { x: number; y: number; w: number; h: number } | null = null;
-          const detected = detectMiteBBox(norm.x, norm.y);
-          if (detected) {
-            rect = detected;
-          } else {
-            const iw = Math.max(1, imgRef.current?.naturalWidth ?? 1);
-            const ih = Math.max(1, imgRef.current?.naturalHeight ?? 1);
-            const aspect = iw / Math.max(1, ih);
-            const wNorm = DEFAULT_CLICK_BOX_SIZE;
-            const hNorm = wNorm * Math.max(0.0001, aspect);
-            const hx = wNorm / 2;
-            const hy = hNorm / 2;
-            const cx = Math.max(hx, Math.min(1 - hx, norm.x));
-            const cy = Math.max(hy, Math.min(1 - hy, norm.y));
-            rect = { x: cx - hx, y: cy - hy, w: wNorm, h: hNorm };
-          }
-          if (rect && rect.w > 0.0001 && rect.h > 0.0001) {
-            const rx1 = Math.max(0, rect.x);
-            const ry1 = Math.max(0, rect.y);
-            const rx2 = Math.min(1, rect.x + rect.w);
-            const ry2 = Math.min(1, rect.y + rect.h);
-            const w = rx2 - rx1;
-            const h = ry2 - ry1;
-            if (w > 0.0001 && h > 0.0001) {
-              const id = cryptoRandomId();
-              const next: VarroaBoundingBox = {
-                id,
-                class_name: "varroa_mite",
-                x: rx1,
-                y: ry1,
-                w,
-                h,
-              };
-              onBoxesChange([...boxes, next]);
+
+      if (!cand.moved) {
+        clickCandidate.current = null;
+        if (cand.type === "box") {
+          onBoxesChange(boxes.filter((b) => b.id !== cand.id));
+          setDrawing(null);
+          dragState.current = null;
+          return;
+        }
+        if (cand.type === "draw") {
+          setDrawing(null);
+          const norm = clientToNormalized(cand.x, cand.y);
+          if (norm) {
+            let rect: { x: number; y: number; w: number; h: number } | null = null;
+            const detected = detectMiteBBox(norm.x, norm.y);
+            if (detected) {
+              rect = detected;
+            } else {
+              const iw = Math.max(1, imgRef.current?.naturalWidth ?? 1);
+              const ih = Math.max(1, imgRef.current?.naturalHeight ?? 1);
+              const aspect = iw / Math.max(1, ih);
+              const wNorm = DEFAULT_CLICK_BOX_SIZE;
+              const hNorm = wNorm * Math.max(0.0001, aspect);
+              const hx = wNorm / 2;
+              const hy = hNorm / 2;
+              const cx = Math.max(hx, Math.min(1 - hx, norm.x));
+              const cy = Math.max(hy, Math.min(1 - hy, norm.y));
+              rect = { x: cx - hx, y: cy - hy, w: wNorm, h: hNorm };
+            }
+            if (rect && rect.w > 0.0001 && rect.h > 0.0001) {
+              const rx1 = Math.max(0, rect.x);
+              const ry1 = Math.max(0, rect.y);
+              const rx2 = Math.min(1, rect.x + rect.w);
+              const ry2 = Math.min(1, rect.y + rect.h);
+              const w = rx2 - rx1;
+              const h = ry2 - ry1;
+              if (w > 0.0001 && h > 0.0001) {
+                const id = cryptoRandomId();
+                const next: VarroaBoundingBox = {
+                  id,
+                  class_name: "varroa_mite",
+                  x: rx1,
+                  y: ry1,
+                  w,
+                  h,
+                };
+                onBoxesChange([...boxes, next]);
+              }
             }
           }
+          dragState.current = null;
+          return;
         }
-        dragState.current = null;
-        return;
       }
     }
     clickCandidate.current = null;
@@ -1034,29 +1112,46 @@ function ZoomableAnnotatedImage({
           <div className="inline-flex overflow-hidden rounded-xl border border-zinc-700 text-xs font-semibold">
             <button
               type="button"
-              onClick={() => setMode("MARK")}
+              onClick={() => setTool("auto")}
               disabled={disabled}
+              title="Auto-detect: klikk på en midd for å lage boks automatisk"
               className={[
-                "h-9 px-3 transition",
-                mode === "MARK"
+                "flex h-9 items-center gap-1.5 px-3 transition",
+                tool === "auto"
                   ? "bg-amber-400 text-zinc-950 hover:bg-amber-300"
                   : "bg-zinc-950 text-zinc-300 hover:bg-zinc-900",
                 disabled ? "opacity-60" : "",
               ].join(" ")}
             >
-              ✏️ Markér midd
+              <span className="text-sm">✨</span> Auto
             </button>
             <button
               type="button"
-              onClick={() => setMode("PAN")}
+              onClick={() => setTool("draw")}
+              disabled={disabled}
+              title="Tegn firkant: dra for å tegne en boks rundt en midd"
               className={[
-                "h-9 px-3 transition",
-                mode === "PAN"
+                "flex h-9 items-center gap-1.5 px-3 transition",
+                tool === "draw"
+                  ? "bg-amber-400 text-zinc-950 hover:bg-amber-300"
+                  : "bg-zinc-950 text-zinc-300 hover:bg-zinc-900",
+                disabled ? "opacity-60" : "",
+              ].join(" ")}
+            >
+              <span className="text-sm">⬛</span> Tegn
+            </button>
+            <button
+              type="button"
+              onClick={() => setTool("pan")}
+              title="Pan/zoom: dra for å forflytte deg i bildet"
+              className={[
+                "flex h-9 items-center gap-1.5 px-3 transition",
+                tool === "pan"
                   ? "bg-amber-400 text-zinc-950 hover:bg-amber-300"
                   : "bg-zinc-950 text-zinc-300 hover:bg-zinc-900",
               ].join(" ")}
             >
-              ✋ Pan/zoom
+              <span className="text-sm">✋</span> Pan
             </button>
           </div>
         </div>
@@ -1089,8 +1184,9 @@ function ZoomableAnnotatedImage({
         onDoubleClick={onDoubleClick}
         className={[
           "relative overflow-hidden rounded-3xl bg-zinc-950",
-          mode === "MARK" && !disabled ? "cursor-crosshair" : "",
-          mode === "PAN" ? "cursor-grab active:cursor-grabbing" : "",
+          tool === "auto" && !disabled ? "cursor-crosshair" : "",
+          tool === "draw" && !disabled ? "cursor-crosshair" : "",
+          tool === "pan" ? "cursor-grab active:cursor-grabbing" : "",
         ].join(" ")}
         style={{ touchAction: "none" }}
       >
@@ -1235,13 +1331,14 @@ function ZoomableAnnotatedImage({
       </div>
 
       <div className="mt-2 text-center text-[11px] text-zinc-500">
-        ✏️ Klikk på en midd → lager en firkant automatisk. Dra med musa for å forflytte deg rundt
-        i bildet (som i Roboflow). Klikk på en eksisterende firkant for å fjerne den. Hold{" "}
-        <kbd className="rounded bg-zinc-800 px-1 text-zinc-300">SPACE</kbd> for å tegne en ny boks
-        oppå en eksisterende (uten å slette). Zoom: tast{" "}
-        <kbd className="rounded bg-zinc-800 px-1 text-zinc-300">1</kbd> (ut) /{" "}
-        <kbd className="rounded bg-zinc-800 px-1 text-zinc-300">2</kbd> (inn), musehjul eller
-        knappene under. Mobil: knip to fingre for å zoome, dra for å forflytte, tap for å merke.
+        <span className="font-semibold text-zinc-400">✨ Auto:</span> klikk på midd → auto-boks.{" "}
+        <span className="font-semibold text-zinc-400">⬛ Tegn:</span> dra for å tegne boks.{" "}
+        <span className="font-semibold text-zinc-400">✋ Pan:</span> dra for å forflytte.{" "}
+        Klikk eksisterende boks for å slette. Hold{" "}
+        <kbd className="rounded bg-zinc-800 px-1 text-zinc-300">SPACE</kbd> i Auto for å tegne over eksisterende.
+        Hold <kbd className="rounded bg-zinc-800 px-1 text-zinc-300">SHIFT</kbd> for pan i alle moduser.
+        Zoom: tast <kbd className="rounded bg-zinc-800 px-1 text-zinc-300">1</kbd> (ut) /{" "}
+        <kbd className="rounded bg-zinc-800 px-1 text-zinc-300">2</kbd> (inn), sveip eller knapper.
       </div>
     </div>
   );
