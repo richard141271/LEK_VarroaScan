@@ -475,15 +475,12 @@ function ZoomableAnnotatedImage({
     const data = id.data;
     const minDim = Math.min(iw, ih);
 
-    // Mites are small dark objects. Bounds are relative to image size so it
-    // works on both overview and close-up shots.
-    const MIN_BOX_NORM = 0.012;
-    const DEFAULT_BOX_NORM = 0.025;
-    const MAX_BOX_NORM = 0.05;
+    // A varroa mite is small. Box size is a fixed fraction of image size so it
+    // is consistent across overview and close-up shots. Mites are typically
+    // 1-2% of the image; box adds a little padding.
+    const BOX_NORM = 0.02;
 
-    const minBoxPx = Math.round(MIN_BOX_NORM * minDim);
-    const defaultBoxPx = Math.round(DEFAULT_BOX_NORM * minDim);
-    const maxBoxPx = Math.round(MAX_BOX_NORM * minDim);
+    const boxPx = Math.round(BOX_NORM * minDim);
 
     let cx = Math.round(normX * iw);
     let cy = Math.round(normY * ih);
@@ -497,8 +494,8 @@ function ZoomableAnnotatedImage({
 
     // Sample background luminance from a ring around the click point.
     const ringRadii = [
-      Math.max(18, Math.round(minDim * 0.03)),
-      Math.max(30, Math.round(minDim * 0.05)),
+      Math.max(15, Math.round(minDim * 0.025)),
+      Math.max(28, Math.round(minDim * 0.045)),
     ];
     const bgSamples: number[] = [];
     for (let a = 0; a < 360; a += 10) {
@@ -516,7 +513,6 @@ function ZoomableAnnotatedImage({
       ? bgSamples[Math.floor(bgSamples.length * 0.5)]
       : 200;
 
-    // A pixel is "mite" if significantly darker than local background.
     const DARK_MARGIN = Math.max(14, bgLum * 0.14);
     const threshold = bgLum - DARK_MARGIN;
 
@@ -525,80 +521,82 @@ function ZoomableAnnotatedImage({
       return lum(px, py) < threshold;
     };
 
-    // If the click point is not dark, search nearby for the nearest dark pixel.
+    // Find the center of the nearest dark blob (the mite). Search outward from
+    // the click point; once a dark pixel is found, do a small flood fill to
+    // find the blob's centroid.
+    let startX = cx;
+    let startY = cy;
     if (!isDark(cx, cy)) {
       let found = false;
-      for (let r = 1; r <= 18 && !found; r++) {
+      for (let r = 1; r <= 15 && !found; r++) {
         for (let dy = -r; dy <= r && !found; dy++) {
           for (let dx = -r; dx <= r && !found; dx++) {
             if (Math.abs(dx) !== r && Math.abs(dy) !== r) continue;
             const sx = cx + dx;
             const sy = cy + dy;
             if (isDark(sx, sy)) {
-              cx = sx;
-              cy = sy;
+              startX = sx;
+              startY = sy;
               found = true;
             }
           }
         }
       }
       if (!found) {
-        const hx = defaultBoxPx / 2;
-        const hy = defaultBoxPx / 2;
+        // No dark pixel nearby → box centered on the click.
+        const hx = boxPx / 2;
+        const hy = boxPx / 2;
         return {
           x: Math.max(0, cx - hx) / iw,
           y: Math.max(0, cy - hy) / ih,
-          w: defaultBoxPx / iw,
-          h: defaultBoxPx / ih,
+          w: boxPx / iw,
+          h: boxPx / ih,
         };
       }
     }
 
-    // Radial scan: walk outward from the center in many directions until we
-    // hit a non-dark pixel (mite edge). This avoids merging with neighboring
-    // mites, unlike region-growing.
-    const directions = 24;
-    let maxLeft = 0, maxRight = 0, maxUp = 0, maxDown = 0;
+    // Small flood fill to find the centroid of the mite blob.
+    // Limited to a small radius so we don't merge with neighbors.
+    const floodRadius = Math.round(minDim * 0.02);
+    const visited = new Set<number>();
+    const stack: number[] = [startY * iw + startX];
+    let sumX = 0;
+    let sumY = 0;
+    let count = 0;
 
-    for (let i = 0; i < directions; i++) {
-      const angle = (i * 2 * Math.PI) / directions;
-      const dx = Math.cos(angle);
-      const dy = Math.sin(angle);
-      let dist = 0;
-      // Walk outward up to half the max box size.
-      while (dist < maxBoxPx / 2) {
-        dist += 1;
-        const px = Math.round(cx + dx * dist);
-        const py = Math.round(cy + dy * dist);
-        if (!isDark(px, py)) break;
+    while (stack.length > 0) {
+      const idx = stack.pop()!;
+      if (visited.has(idx)) continue;
+      visited.add(idx);
+      const px = idx % iw;
+      const py = (idx - px) / iw;
+      if (Math.abs(px - startX) > floodRadius || Math.abs(py - startY) > floodRadius) continue;
+      if (!isDark(px, py)) continue;
+      sumX += px;
+      sumY += py;
+      count++;
+      for (let dy = -1; dy <= 1; dy++) {
+        for (let dx = -1; dx <= 1; dx++) {
+          if (dx === 0 && dy === 0) continue;
+          const nx = px + dx;
+          const ny = py + dy;
+          if (nx >= 0 && ny >= 0 && nx < iw && ny < ih) {
+            stack.push(ny * iw + nx);
+          }
+        }
       }
-      // The edge is one step back (last dark pixel).
-      const edgeDist = dist - 1;
-      if (dx < -0.5 && edgeDist > maxLeft) maxLeft = edgeDist;
-      if (dx > 0.5 && edgeDist > maxRight) maxRight = edgeDist;
-      if (dy < -0.5 && edgeDist > maxUp) maxUp = edgeDist;
-      if (dy > 0.5 && edgeDist > maxDown) maxDown = edgeDist;
     }
 
-    // Box extent from the measured edges, with padding.
-    const MARGIN = 0.2;
-    let halfW = Math.max(maxLeft, maxRight) * (1 + MARGIN);
-    let halfH = Math.max(maxUp, maxDown) * (1 + MARGIN);
+    // Center the box on the blob centroid (or click if no blob found).
+    const centerX = count > 0 ? sumX / count : cx;
+    const centerY = count > 0 ? sumY / count : cy;
 
-    // Clamp to min/max.
-    halfW = Math.max(minBoxPx / 2, Math.min(maxBoxPx / 2, halfW));
-    halfH = Math.max(minBoxPx / 2, Math.min(maxBoxPx / 2, halfH));
-
-    // If the detected extent is suspiciously small (just noise), use default.
-    if (halfW < minBoxPx / 2 + 1 || halfH < minBoxPx / 2 + 1) {
-      halfW = defaultBoxPx / 2;
-      halfH = defaultBoxPx / 2;
-    }
-
-    let bx1 = Math.round(cx - halfW);
-    let by1 = Math.round(cy - halfH);
-    let bx2 = Math.round(cx + halfW);
-    let by2 = Math.round(cy + halfH);
+    const hx = boxPx / 2;
+    const hy = boxPx / 2;
+    let bx1 = Math.round(centerX - hx);
+    let by1 = Math.round(centerY - hy);
+    let bx2 = Math.round(centerX + hx);
+    let by2 = Math.round(centerY + hy);
 
     if (bx1 < 0) { bx2 -= bx1; bx1 = 0; }
     if (by1 < 0) { by2 -= by1; by1 = 0; }
