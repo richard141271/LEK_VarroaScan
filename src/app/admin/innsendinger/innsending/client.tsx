@@ -31,6 +31,12 @@ import {
   type VarroaSubmissionRecord,
   type VarroaSubmissionReview,
 } from "@/lib/varroaWorkflow";
+import {
+  type VarroaBoundingBox,
+  getConfidenceLevel,
+  coerceImageNotes,
+  type ImageNote,
+} from "@/lib/varroaTypes";
 
 type SaveAction =
   | "SAVE_DRAFT"
@@ -60,26 +66,8 @@ function getActionButtonLabel(action: SaveAction) {
   }
 }
 
-/**
- * Bounding box for a detected varroa mite.
- * Coordinates are NORMALIZED to the source image (0..1 range), so the dataset
- * is independent of image resolution and ready for Roboflow / YOLO export.
- *
- *  x = left edge   (0 = leftmost pixel in source image, 1 = rightmost)
- *  y = top edge    (0 = top,            1 = bottom)
- *  w = width of the box, expressed as fraction of source image width
- *  h = height of the box, expressed as fraction of source image height
- *
- * Roboflow Pascal VOC / YOLO conversion is straightforward from this shape.
- */
-export type VarroaBoundingBox = {
-  id: string;
-  class_name: "varroa_mite";
-  x: number; // 0..1, left
-  y: number; // 0..1, top
-  w: number; // 0..1, width
-  h: number; // 0..1, height
-};
+// VarroaBoundingBox imported from @/lib/varroaTypes (shared with beekeeper page + edge functions)
+// Confidence field (0..1) is set on AI-predicted boxes; undefined = manual admin box.
 
 type ImageReviewDraft = {
   id?: string;
@@ -160,16 +148,69 @@ function cryptoRandomId() {
   return `b_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
 }
 
+/**
+ * Extract ai_annotations_pending[] from legacy/new `image_notes` JSON.
+ * AI-suggested boxes are stored separately from admin-approved annotations[]
+ * so that admin edits can overwrite AI suggestions without losing track of provenance.
+ */
+function extractAIPendingFromImageNotes(
+  imageNotes: unknown,
+  imageIndex: number,
+): VarroaBoundingBox[] {
+  if (!imageNotes || typeof imageNotes !== "object") return [];
+  if (!Array.isArray(imageNotes)) return [];
+  const entry = (imageNotes as unknown[]).find(
+    (e) =>
+      !!e &&
+      typeof e === "object" &&
+      "image_index" in (e as Record<string, unknown>) &&
+      (e as { image_index: number }).image_index === imageIndex,
+  );
+  if (!entry || typeof entry !== "object") return [];
+  const rec = entry as Record<string, unknown>;
+  const raw = rec.ai_annotations_pending;
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .map((b) => {
+      if (!b || typeof b !== "object") return null;
+      const obj = b as Record<string, unknown>;
+      const id = typeof obj.id === "string" ? obj.id : cryptoRandomId();
+      const cn = typeof obj.class_name === "string" ? obj.class_name : "varroa_mite";
+      const x = typeof obj.x === "number" ? obj.x : NaN;
+      const y = typeof obj.y === "number" ? obj.y : NaN;
+      const w = typeof obj.w === "number" ? obj.w : NaN;
+      const h = typeof obj.h === "number" ? obj.h : NaN;
+      if (![x, y, w, h].every(Number.isFinite)) return null;
+      if (w <= 0 || h <= 0) return null;
+      const box: VarroaBoundingBox = {
+        id,
+        class_name: cn === "varroa_mite" ? cn : "varroa_mite",
+        x: Math.max(0, Math.min(1, x)),
+        y: Math.max(0, Math.min(1, y)),
+        w: Math.max(0.0005, Math.min(1, w)),
+        h: Math.max(0.0005, Math.min(1, h)),
+      };
+      if (typeof obj.confidence === "number") {
+        box.confidence = Math.max(0, Math.min(1, obj.confidence));
+      }
+      return box;
+    })
+    .filter((b): b is VarroaBoundingBox => !!b);
+}
+
 function createDraftFromImageReview(
   review: VarroaSubmissionImageReview,
   imageNotes: unknown,
 ): ImageReviewDraft {
   const annotations = extractAnnotationsFromImageNotes(imageNotes, review.image_index);
+  const aiPending = extractAIPendingFromImageNotes(imageNotes, review.image_index);
+  // If admin hasn't added any boxes yet → prefill with AI suggestions (first-time open).
+  // If some boxes already exist, keep them (admin has started working).
+  const finalAnnotations: VarroaBoundingBox[] =
+    annotations.length === 0 && aiPending.length > 0 ? [...aiPending] : annotations;
   const explicitMiteCount = review.mite_count != null ? String(review.mite_count) : "";
-  // If annotations exist (new flow) → use their count as authoritative count.
-  // Otherwise: fall back to whatever explicit count was stored in the row.
   const miteCountInput =
-    annotations.length > 0 ? String(annotations.length) : explicitMiteCount;
+    finalAnnotations.length > 0 ? String(finalAnnotations.length) : explicitMiteCount;
   return {
     id: review.id,
     imageIndex: review.image_index,
@@ -178,7 +219,7 @@ function createDraftFromImageReview(
     comment: review.comment ?? "",
     trainingReady: Boolean(review.training_ready),
     approved: Boolean(review.approved),
-    annotations,
+    annotations: finalAnnotations,
   };
 }
 
@@ -201,16 +242,18 @@ function ZoomableAnnotatedImage({
   boxes,
   onBoxesChange,
   disabled,
+  aiBorderStyle = "dashed",
 }: {
   src: string;
   alt: string;
   boxes: VarroaBoundingBox[];
   onBoxesChange: (next: VarroaBoundingBox[]) => void;
   disabled?: boolean;
+  aiBorderStyle?: "dashed" | "solid";
 }) {
   const MIN_SCALE = 1;
   const MAX_SCALE = 10;
-  const DEFAULT_CLICK_BOX_SIZE = 0.010;
+  const DEFAULT_CLICK_BOX_SIZE = 0.04;
 
   const containerRef = useRef<HTMLDivElement | null>(null);
   const imgRef = useRef<HTMLImageElement | null>(null);
@@ -226,7 +269,7 @@ function ZoomableAnnotatedImage({
   const [scale, setScale] = useState(1);
   const [tx, setTx] = useState(0);
   const [ty, setTy] = useState(0);
-  const [mode, setMode] = useState<"MARK" | "PAN">("MARK");
+  const [tool, setTool] = useState<"pan" | "auto" | "draw">("auto");
   const [drawing, setDrawing] = useState<{
     startX: number;
     startY: number;
@@ -266,15 +309,17 @@ function ZoomableAnnotatedImage({
     startTy: number;
     moved: boolean;
   } | null>(null);
-  const drawKeysPressed = useRef({ shift: false });
+  const drawKeysPressed = useRef({ shift: false, space: false });
   const clickCandidate = useRef<
     | { type: "box"; id: string; t: number; x: number; y: number; moved: boolean }
     | { type: "draw"; t: number; x: number; y: number; moved: boolean }
+    | { type: "drawBox"; t: number; x: number; y: number; moved: boolean }
     | null
   >(null);
   const [hoveredBoxId, setHoveredBoxId] = useState<string | null>(null);
 
   // Track SHIFT held on window for "force pan during MARK mode".
+  // Track SPACE held on window for "draw box over existing box without deleting".
   useEffect(() => {
     const syncShiftFromEvent = (e: { shiftKey?: boolean; getModifierState?: (k: string) => boolean }) => {
       const fromEvent =
@@ -298,14 +343,30 @@ function ZoomableAnnotatedImage({
 
     const onKeyDown = (e: globalThis.KeyboardEvent) => {
       syncShiftFromEvent(e);
+      if (e.code === "Space" || e.key === " ") {
+        drawKeysPressed.current.space = true;
+      }
+      const tag = (e.target as HTMLElement | null)?.tagName;
+      const isEditable =
+        tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" ||
+        (e.target as HTMLElement | null)?.isContentEditable;
+      if (isEditable) return;
+      if (e.key === "1") {
+        zoomBy(1 / 1.5);
+      } else if (e.key === "2") {
+        zoomBy(1.5);
+      }
     };
     const onKeyUp = (e: globalThis.KeyboardEvent) => {
       const wasShift = drawKeysPressed.current.shift;
       syncShiftFromEvent(e);
+      if (e.code === "Space" || e.key === " ") {
+        drawKeysPressed.current.space = false;
+      }
       if (
         wasShift &&
         !drawKeysPressed.current.shift &&
-        mode === "MARK" &&
+        tool !== "pan" &&
         dragState.current != null &&
         !disabled
       ) {
@@ -314,9 +375,11 @@ function ZoomableAnnotatedImage({
     };
     const onBlur = () => {
       drawKeysPressed.current.shift = false;
+      drawKeysPressed.current.space = false;
     };
     const onFocus = () => {
       drawKeysPressed.current.shift = false;
+      drawKeysPressed.current.space = false;
     };
     window.addEventListener("keydown", onKeyDown);
     window.addEventListener("keyup", onKeyUp);
@@ -328,7 +391,30 @@ function ZoomableAnnotatedImage({
       window.removeEventListener("blur", onBlur, true);
       window.removeEventListener("focus", onFocus, true);
     };
-  }, [mode, disabled]);
+  }, [tool, disabled]);
+
+  // Native non-passive wheel listener so preventDefault works (React onWheel may be passive).
+  // Matches Roboflow: swipe/scroll = pan, trackpad pinch (ctrlKey) = zoom.
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    const handler = (e: WheelEvent) => {
+      e.preventDefault();
+      if (e.ctrlKey) {
+        const factor = e.deltaY < 0 ? 1.15 : 1 / 1.15;
+        applyZoomAt(e.clientX, e.clientY, viewRef.current.scale * factor);
+        return;
+      }
+      const cur = viewRef.current;
+      if (cur.scale <= 1.001) return;
+      const [txN, tyN] = clampTxTy(cur.scale, cur.tx - e.deltaX, cur.ty - e.deltaY);
+      viewRef.current = { ...cur, tx: txN, ty: tyN };
+      setTx(txN);
+      setTy(tyN);
+    };
+    el.addEventListener("wheel", handler, { passive: false });
+    return () => el.removeEventListener("wheel", handler);
+  }, []);
 
   const getImageDisplayRect = () => {
     const img = imgRef.current;
@@ -387,27 +473,75 @@ function ZoomableAnnotatedImage({
     const iw = sz.w;
     const ih = sz.h;
     const data = id.data;
-    const LUM_THRESHOLD = 160;
-    const isDark = (px: number, py: number) => {
-      if (px < 0 || py < 0 || px >= iw || py >= ih) return false;
-      const off = (py * iw + px) * 4;
-      const r = data[off];
-      const g = data[off + 1];
-      const b = data[off + 2];
-      const lum = 0.299 * r + 0.587 * g + 0.114 * b;
-      return lum < LUM_THRESHOLD;
-    };
+    const minDim = Math.min(iw, ih);
 
     let cx = Math.round(normX * iw);
     let cy = Math.round(normY * ih);
     cx = Math.max(2, Math.min(iw - 3, cx));
     cy = Math.max(2, Math.min(ih - 3, cy));
 
-    const MAX_REGION = Math.max(2500, Math.round((iw * ih) / 400));
+    const lum = (px: number, py: number) => {
+      const off = (py * iw + px) * 4;
+      return 0.299 * data[off] + 0.587 * data[off + 1] + 0.114 * data[off + 2];
+    };
 
-    if (!isDark(cx, cy)) {
-      return null;
+    // Sample background luminance from rings around the click point.
+    const ringRadii = [
+      Math.max(15, Math.round(minDim * 0.025)),
+      Math.max(30, Math.round(minDim * 0.05)),
+      Math.max(50, Math.round(minDim * 0.08)),
+    ];
+    const bgSamples: number[] = [];
+    for (let a = 0; a < 360; a += 8) {
+      const rad = (a * Math.PI) / 180;
+      for (const r of ringRadii) {
+        const sx = Math.round(cx + r * Math.cos(rad));
+        const sy = Math.round(cy + r * Math.sin(rad));
+        if (sx >= 0 && sy >= 0 && sx < iw && sy < ih) {
+          bgSamples.push(lum(sx, sy));
+        }
+      }
     }
+    bgSamples.sort((a, b) => a - b);
+    const bgLum = bgSamples.length > 0
+      ? bgSamples[Math.floor(bgSamples.length * 0.5)]
+      : 200;
+
+    // Mites are significantly darker than the background.
+    const DARK_MARGIN = Math.max(20, bgLum * 0.22);
+    const threshold = bgLum - DARK_MARGIN;
+
+    const isDark = (px: number, py: number) => {
+      if (px < 0 || py < 0 || px >= iw || py >= ih) return false;
+      return lum(px, py) < threshold;
+    };
+
+    // Find the nearest dark pixel to the click (in case click landed on a
+    // bright reflection or light spot on the mite).
+    let startX = cx;
+    let startY = cy;
+    if (!isDark(cx, cy)) {
+      let found = false;
+      for (let r = 1; r <= 30 && !found; r++) {
+        for (let dy = -r; dy <= r && !found; dy++) {
+          for (let dx = -r; dx <= r && !found; dx++) {
+            if (Math.abs(dx) !== r && Math.abs(dy) !== r) continue;
+            const sx = cx + dx;
+            const sy = cy + dy;
+            if (isDark(sx, sy)) {
+              startX = sx;
+              startY = sy;
+              found = true;
+            }
+          }
+        }
+      }
+      if (!found) return null;
+    }
+
+    // Max radius for the region: a mite can be large in a close-up shot,
+    // but we cap it to avoid swallowing the whole image.
+    const maxRadius = Math.round(minDim * 0.2);
 
     let v = visitedGenRef.current;
     if (!v || v.w !== iw || v.h !== ih) {
@@ -418,26 +552,19 @@ function ZoomableAnnotatedImage({
     const gen = v.gen;
     const visited = v.array;
 
-    const stack: number[] = [];
-    const idx0 = cy * iw + cx;
-    stack.push(idx0);
-    visited[idx0] = gen;
+    // Region growing: collect all connected dark pixels within maxRadius.
+    const darkPixels: Array<[number, number]> = [];
+    const stack: number[] = [startY * iw + startX];
+    visited[startY * iw + startX] = gen;
 
-    let x1 = cx;
-    let y1 = cy;
-    let x2 = cx;
-    let y2 = cy;
-    let count = 0;
-
-    while (stack.length > 0 && count < MAX_REGION) {
+    while (stack.length > 0) {
       const idx = stack.pop()!;
       const px = idx % iw;
       const py = (idx - px) / iw;
-      if (px < x1) x1 = px;
-      if (py < y1) y1 = py;
-      if (px > x2) x2 = px;
-      if (py > y2) y2 = py;
-      count++;
+      const dist = Math.hypot(px - startX, py - startY);
+      if (dist > maxRadius) continue;
+      if (!isDark(px, py)) continue;
+      darkPixels.push([px, py]);
 
       for (let dy = -1; dy <= 1; dy++) {
         for (let dx = -1; dx <= 1; dx++) {
@@ -448,33 +575,82 @@ function ZoomableAnnotatedImage({
           const nIdx = ny * iw + nx;
           if (visited[nIdx] === gen) continue;
           visited[nIdx] = gen;
-          if (isDark(nx, ny)) {
-            stack.push(nIdx);
-          }
+          stack.push(nIdx);
         }
       }
     }
 
-    let wPx = x2 - x1 + 1;
-    let hPx = y2 - y1 + 1;
+    if (darkPixels.length === 0) return null;
 
-    const MIN_BOX_PX = 6;
-    if (wPx < MIN_BOX_PX || hPx < MIN_BOX_PX) {
-      return null;
+    // Bounding box of the dark region.
+    let x1 = Infinity, y1 = Infinity, x2 = -Infinity, y2 = -Infinity;
+    for (const [px, py] of darkPixels) {
+      if (px < x1) x1 = px;
+      if (py < y1) y1 = py;
+      if (px > x2) x2 = px;
+      if (py > y2) y2 = py;
     }
 
-    const mW = Math.max(3, Math.round(wPx * 0.35));
-    const mH = Math.max(3, Math.round(hPx * 0.35));
-    x1 = Math.max(0, x1 - mW);
-    y1 = Math.max(0, y1 - mH);
-    x2 = Math.min(iw - 1, x2 + mW);
-    y2 = Math.min(ih - 1, y2 + mH);
-    wPx = x2 - x1 + 1;
-    hPx = y2 - y1 + 1;
+    // Fill holes (bright reflections) inside the bbox: any pixel inside the
+    // bbox that is surrounded by dark pixels belongs to the mite.
+    // Use a morphological closing: dilate the dark region by a few pixels,
+    // then take the bbox of the result.
+    const dilateR = Math.max(3, Math.round(Math.min(x2 - x1, y2 - y1) * 0.12));
+    const closed: Array<[number, number]> = [];
+    for (let py = y1 - dilateR; py <= y2 + dilateR; py++) {
+      for (let px = x1 - dilateR; px <= x2 + dilateR; px++) {
+        if (px < 0 || py < 0 || px >= iw || py >= ih) continue;
+        // Check if this pixel is within dilateR of any dark pixel.
+        let nearDark = false;
+        for (let dy = -dilateR; dy <= dilateR && !nearDark; dy++) {
+          for (let dx = -dilateR; dx <= dilateR && !nearDark; dx++) {
+            if (dx * dx + dy * dy > dilateR * dilateR) continue;
+            const nx = px + dx;
+            const ny = py + dy;
+            if (nx < 0 || ny < 0 || nx >= iw || ny >= ih) continue;
+            if (isDark(nx, ny)) nearDark = true;
+          }
+        }
+        if (nearDark) closed.push([px, py]);
+      }
+    }
+
+    // Final bbox from the closed region.
+    let fx1 = Infinity, fy1 = Infinity, fx2 = -Infinity, fy2 = -Infinity;
+    for (const [px, py] of closed) {
+      if (px < fx1) fx1 = px;
+      if (py < fy1) fy1 = py;
+      if (px > fx2) fx2 = px;
+      if (py > fy2) fy2 = py;
+    }
+
+    // Safety: if the closed region is unreasonably large (merged with
+    // neighbors or noise), fall back to the original dark bbox.
+    const closedW = fx2 - fx1 + 1;
+    const closedH = fy2 - fy1 + 1;
+    const darkW = x2 - x1 + 1;
+    const darkH = y2 - y1 + 1;
+    if (closedW > darkW * 3 || closedH > darkH * 3) {
+      fx1 = x1; fy1 = y1; fx2 = x2; fy2 = y2;
+    }
+
+    // Add padding around the mite.
+    const MARGIN = 0.15;
+    const boxW = fx2 - fx1 + 1;
+    const boxH = fy2 - fy1 + 1;
+    const padX = Math.round(boxW * MARGIN);
+    const padY = Math.round(boxH * MARGIN);
+    fx1 = Math.max(0, fx1 - padX);
+    fy1 = Math.max(0, fy1 - padY);
+    fx2 = Math.min(iw - 1, fx2 + padX);
+    fy2 = Math.min(ih - 1, fy2 + padY);
+
+    const wPx = fx2 - fx1 + 1;
+    const hPx = fy2 - fy1 + 1;
 
     return {
-      x: x1 / iw,
-      y: y1 / ih,
+      x: fx1 / iw,
+      y: fy1 / ih,
       w: wPx / iw,
       h: hPx / ih,
     };
@@ -565,10 +741,25 @@ function ZoomableAnnotatedImage({
   };
 
   const onWheel = (e: ReactWheelEvent<HTMLDivElement>) => {
-    if (viewRef.current.scale === 1 && e.deltaY > 0) return;
     e.preventDefault();
-    const factor = e.deltaY < 0 ? 1.15 : 1 / 1.15;
-    applyZoomAt(e.clientX, e.clientY, viewRef.current.scale * factor);
+    // ctrlKey=true means trackpad pinch-zoom → zoom.
+    // Otherwise (Magic Mouse swipe, trackpad two-finger scroll, mouse wheel) → pan,
+    // matching Roboflow's interaction model.
+    if (e.ctrlKey) {
+      const factor = e.deltaY < 0 ? 1.15 : 1 / 1.15;
+      applyZoomAt(e.clientX, e.clientY, viewRef.current.scale * factor);
+      return;
+    }
+    const cur = viewRef.current;
+    if (cur.scale <= 1.001) return;
+    const [txN, tyN] = clampTxTy(
+      cur.scale,
+      cur.tx - e.deltaX,
+      cur.ty - e.deltaY,
+    );
+    viewRef.current = { ...cur, tx: txN, ty: tyN };
+    setTx(txN);
+    setTy(tyN);
   };
 
   const startPanFromPointer = (clientX: number, clientY: number) => {
@@ -630,7 +821,8 @@ function ZoomableAnnotatedImage({
     const shiftHeld =
       drawKeysPressed.current.shift ||
       (typeof e.shiftKey === "boolean" ? e.shiftKey : false);
-    const wantPan = mode === "PAN" || shiftHeld || disabled;
+    const spaceHeld = drawKeysPressed.current.space;
+    const wantPan = tool === "pan" || shiftHeld || disabled;
 
     if (wantPan) {
       startPanFromPointer(e.clientX, e.clientY);
@@ -648,7 +840,23 @@ function ZoomableAnnotatedImage({
       return;
     }
 
-    const hit = boxHitTest(e.clientX, e.clientY);
+    // DRAW tool: start drawing a rectangle box
+    if (tool === "draw") {
+      clickCandidate.current = {
+        type: "drawBox",
+        t: performance.now(),
+        x: e.clientX,
+        y: e.clientY,
+        moved: false,
+      };
+      setDrawing({ startX: norm.x, startY: norm.y, endX: norm.x, endY: norm.y });
+      dragState.current = null;
+      pinchState.current = null;
+      return;
+    }
+
+    // AUTO tool: click = auto-detect box. If click lands on existing box, delete it (unless SPACE held)
+    const hit = spaceHeld ? { hit: false, id: null } : boxHitTest(e.clientX, e.clientY);
     if (hit.hit && hit.id) {
       clickCandidate.current = {
         type: "box",
@@ -673,12 +881,7 @@ function ZoomableAnnotatedImage({
     };
     dragState.current = null;
     pinchState.current = null;
-    setDrawing({
-      startX: norm.x,
-      startY: norm.y,
-      endX: norm.x,
-      endY: norm.y,
-    });
+    setDrawing(null);
   };
 
   const onPointerMove = (e: PointerEvent<HTMLDivElement>) => {
@@ -723,23 +926,28 @@ function ZoomableAnnotatedImage({
       const dy = e.clientY - clickCandidate.current.y;
       if (Math.hypot(dx, dy) > 4) {
         clickCandidate.current.moved = true;
-        if (clickCandidate.current.type === "box") {
+        if (clickCandidate.current.type === "drawBox") {
+          // DRAW tool: update the rectangle being drawn
+          const norm = clientToNormalized(e.clientX, e.clientY);
+          if (norm && drawing) {
+            setDrawing({ ...drawing, endX: norm.x, endY: norm.y });
+          }
+        } else if (
+          clickCandidate.current.type === "box" ||
+          clickCandidate.current.type === "draw"
+        ) {
+          // AUTO tool: drag after click = pan
           startPanFromPointer(e.clientX, e.clientY);
         }
       }
     }
 
-    if (drawing && pointers.current.size === 1 && pinchState.current == null) {
-      const n = clientToNormalized(e.clientX, e.clientY);
-      if (n) {
-        setDrawing({
-          startX: drawing.startX,
-          startY: drawing.startY,
-          endX: Math.max(0, Math.min(1, n.x)),
-          endY: Math.max(0, Math.min(1, n.y)),
-        });
+    // DRAW tool: keep updating rect while dragging even after moved=true
+    if (clickCandidate.current?.type === "drawBox" && clickCandidate.current.moved) {
+      const norm = clientToNormalized(e.clientX, e.clientY);
+      if (norm && drawing) {
+        setDrawing({ ...drawing, endX: norm.x, endY: norm.y });
       }
-      return;
     }
 
     if (pointers.current.size === 1 && dragState.current && pinchState.current == null) {
@@ -757,84 +965,90 @@ function ZoomableAnnotatedImage({
 
     if (pointers.current.size < 2) pinchState.current = null;
 
-    if (commitDraw && clickCandidate.current && !clickCandidate.current.moved) {
+    if (commitDraw && clickCandidate.current) {
       const cand = clickCandidate.current;
-      clickCandidate.current = null;
-      if (cand.type === "box") {
-        onBoxesChange(boxes.filter((b) => b.id !== cand.id));
+
+      // DRAW tool: create box from dragged rectangle
+      if (cand.type === "drawBox") {
+        clickCandidate.current = null;
+        if (cand.moved && drawing) {
+          const x1 = Math.min(drawing.startX, drawing.endX);
+          const y1 = Math.min(drawing.startY, drawing.endY);
+          const x2 = Math.max(drawing.startX, drawing.endX);
+          const y2 = Math.max(drawing.startY, drawing.endY);
+          const w = Math.max(0.002, x2 - x1);
+          const h = Math.max(0.002, y2 - y1);
+          const id = cryptoRandomId();
+          const next: VarroaBoundingBox = {
+            id,
+            class_name: "varroa_mite",
+            x: x1,
+            y: y1,
+            w,
+            h,
+          };
+          onBoxesChange([...boxes, next]);
+        }
         setDrawing(null);
         dragState.current = null;
         return;
       }
-      if (cand.type === "draw") {
-        setDrawing(null);
-        const norm = clientToNormalized(cand.x, cand.y);
-        if (norm) {
-          let rect: { x: number; y: number; w: number; h: number } | null = null;
-          const detected = detectMiteBBox(norm.x, norm.y);
-          if (detected) {
-            rect = detected;
-          } else {
-            const iw = Math.max(1, imgRef.current?.naturalWidth ?? 1);
-            const ih = Math.max(1, imgRef.current?.naturalHeight ?? 1);
-            const aspect = iw / Math.max(1, ih);
-            const wNorm = DEFAULT_CLICK_BOX_SIZE;
-            const hNorm = wNorm * Math.max(0.0001, aspect);
-            const hx = wNorm / 2;
-            const hy = hNorm / 2;
-            const cx = Math.max(hx, Math.min(1 - hx, norm.x));
-            const cy = Math.max(hy, Math.min(1 - hy, norm.y));
-            rect = { x: cx - hx, y: cy - hy, w: wNorm, h: hNorm };
-          }
-          if (rect && rect.w > 0.0001 && rect.h > 0.0001) {
-            const rx1 = Math.max(0, rect.x);
-            const ry1 = Math.max(0, rect.y);
-            const rx2 = Math.min(1, rect.x + rect.w);
-            const ry2 = Math.min(1, rect.y + rect.h);
-            const w = rx2 - rx1;
-            const h = ry2 - ry1;
-            if (w > 0.0001 && h > 0.0001) {
-              const id = cryptoRandomId();
-              const next: VarroaBoundingBox = {
-                id,
-                class_name: "varroa_mite",
-                x: rx1,
-                y: ry1,
-                w,
-                h,
-              };
-              onBoxesChange([...boxes, next]);
+
+      if (!cand.moved) {
+        clickCandidate.current = null;
+        if (cand.type === "box") {
+          onBoxesChange(boxes.filter((b) => b.id !== cand.id));
+          setDrawing(null);
+          dragState.current = null;
+          return;
+        }
+        if (cand.type === "draw") {
+          setDrawing(null);
+          const norm = clientToNormalized(cand.x, cand.y);
+          if (norm) {
+            let rect: { x: number; y: number; w: number; h: number } | null = null;
+            const detected = detectMiteBBox(norm.x, norm.y);
+            if (detected) {
+              rect = detected;
+            } else {
+              const iw = Math.max(1, imgRef.current?.naturalWidth ?? 1);
+              const ih = Math.max(1, imgRef.current?.naturalHeight ?? 1);
+              const aspect = iw / Math.max(1, ih);
+              const wNorm = DEFAULT_CLICK_BOX_SIZE;
+              const hNorm = wNorm * Math.max(0.0001, aspect);
+              const hx = wNorm / 2;
+              const hy = hNorm / 2;
+              const cx = Math.max(hx, Math.min(1 - hx, norm.x));
+              const cy = Math.max(hy, Math.min(1 - hy, norm.y));
+              rect = { x: cx - hx, y: cy - hy, w: wNorm, h: hNorm };
+            }
+            if (rect && rect.w > 0.0001 && rect.h > 0.0001) {
+              const rx1 = Math.max(0, rect.x);
+              const ry1 = Math.max(0, rect.y);
+              const rx2 = Math.min(1, rect.x + rect.w);
+              const ry2 = Math.min(1, rect.y + rect.h);
+              const w = rx2 - rx1;
+              const h = ry2 - ry1;
+              if (w > 0.0001 && h > 0.0001) {
+                const id = cryptoRandomId();
+                const next: VarroaBoundingBox = {
+                  id,
+                  class_name: "varroa_mite",
+                  x: rx1,
+                  y: ry1,
+                  w,
+                  h,
+                };
+                onBoxesChange([...boxes, next]);
+              }
             }
           }
+          dragState.current = null;
+          return;
         }
-        dragState.current = null;
-        return;
       }
     }
     clickCandidate.current = null;
-
-    if (commitDraw && drawing && pointers.current.size === 0) {
-      const b = drawing;
-      setDrawing(null);
-      const x = Math.min(b.startX, b.endX);
-      const y = Math.min(b.startY, b.endY);
-      const w = Math.max(b.endX, b.startX) - x;
-      const h = Math.max(b.endY, b.startY) - y;
-      if (w > 0.001 && h > 0.001) {
-        const id = cryptoRandomId();
-        const next: VarroaBoundingBox = {
-          id,
-          class_name: "varroa_mite",
-          x: Math.max(0, Math.min(1, x)),
-          y: Math.max(0, Math.min(1, y)),
-          w: Math.max(0.0005, Math.min(1, w)),
-          h: Math.max(0.0005, Math.min(1, h)),
-        };
-        onBoxesChange([...boxes, next]);
-      }
-      dragState.current = null;
-      return;
-    }
 
     if (!commitDraw) {
       setDrawing(null);
@@ -924,29 +1138,46 @@ function ZoomableAnnotatedImage({
           <div className="inline-flex overflow-hidden rounded-xl border border-zinc-700 text-xs font-semibold">
             <button
               type="button"
-              onClick={() => setMode("MARK")}
+              onClick={() => setTool("auto")}
               disabled={disabled}
+              title="Auto-detect: klikk på en midd for å lage boks automatisk"
               className={[
-                "h-9 px-3 transition",
-                mode === "MARK"
+                "flex h-9 items-center gap-1.5 px-3 transition",
+                tool === "auto"
                   ? "bg-amber-400 text-zinc-950 hover:bg-amber-300"
                   : "bg-zinc-950 text-zinc-300 hover:bg-zinc-900",
                 disabled ? "opacity-60" : "",
               ].join(" ")}
             >
-              ✏️ Markér midd
+              <span className="text-sm">✨</span> Auto
             </button>
             <button
               type="button"
-              onClick={() => setMode("PAN")}
+              onClick={() => setTool("draw")}
+              disabled={disabled}
+              title="Tegn firkant: dra for å tegne en boks rundt en midd"
               className={[
-                "h-9 px-3 transition",
-                mode === "PAN"
+                "flex h-9 items-center gap-1.5 px-3 transition",
+                tool === "draw"
+                  ? "bg-amber-400 text-zinc-950 hover:bg-amber-300"
+                  : "bg-zinc-950 text-zinc-300 hover:bg-zinc-900",
+                disabled ? "opacity-60" : "",
+              ].join(" ")}
+            >
+              <span className="text-sm">⬛</span> Tegn
+            </button>
+            <button
+              type="button"
+              onClick={() => setTool("pan")}
+              title="Pan/zoom: dra for å forflytte deg i bildet"
+              className={[
+                "flex h-9 items-center gap-1.5 px-3 transition",
+                tool === "pan"
                   ? "bg-amber-400 text-zinc-950 hover:bg-amber-300"
                   : "bg-zinc-950 text-zinc-300 hover:bg-zinc-900",
               ].join(" ")}
             >
-              ✋ Pan/zoom
+              <span className="text-sm">✋</span> Pan
             </button>
           </div>
         </div>
@@ -972,7 +1203,6 @@ function ZoomableAnnotatedImage({
 
       <div
         ref={containerRef}
-        onWheel={onWheel}
         onPointerDown={onPointerDown}
         onPointerMove={onPointerMove}
         onPointerUp={onPointerUp}
@@ -980,8 +1210,9 @@ function ZoomableAnnotatedImage({
         onDoubleClick={onDoubleClick}
         className={[
           "relative overflow-hidden rounded-3xl bg-zinc-950",
-          mode === "MARK" && !disabled ? "cursor-crosshair" : "",
-          mode === "PAN" ? "cursor-grab active:cursor-grabbing" : "",
+          tool === "auto" && !disabled ? "cursor-crosshair" : "",
+          tool === "draw" && !disabled ? "cursor-crosshair" : "",
+          tool === "pan" ? "cursor-grab active:cursor-grabbing" : "",
         ].join(" ")}
         style={{ touchAction: "none" }}
       >
@@ -997,6 +1228,7 @@ function ZoomableAnnotatedImage({
             ref={imgRef}
             src={src}
             alt={alt}
+            crossOrigin="anonymous"
             draggable={false}
             onLoad={handleImageLoad}
             className="h-auto max-h-full w-auto max-w-full object-contain select-none"
@@ -1006,6 +1238,25 @@ function ZoomableAnnotatedImage({
             const px = normalizedToCssPx(b);
             if (!px) return null;
             const hovered = hoveredBoxId === b.id;
+            const isAI = b.confidence != null && Number.isFinite(b.confidence);
+            const confLevel = isAI ? getConfidenceLevel(b.confidence) : null;
+            let borderColorClass = "border-amber-400";
+            let borderKindClass = "border-solid";
+            if (isAI) {
+              borderKindClass = aiBorderStyle === "dashed" ? "border-dashed" : "border-solid";
+              if (confLevel === "high") {
+                borderColorClass = "border-emerald-400";
+              } else if (confLevel === "medium") {
+                borderColorClass = "border-amber-400";
+              } else {
+                borderColorClass = "border-red-400";
+              }
+            }
+            const hoverClass =
+              hovered && !disabled
+                ? "border border-red-500"
+                : `border ${borderKindClass} ${borderColorClass}`;
+            const borderWidth = hovered && !disabled ? 1 : 0.5;
             return (
               <div
                 key={b.id}
@@ -1031,10 +1282,11 @@ function ZoomableAnnotatedImage({
                 <div
                   className={[
                     "absolute inset-0 bg-transparent transition",
-                    hovered && !disabled ? "border-[1.5px] border-red-500" : "border border-amber-400",
+                    hoverClass,
                   ].join(" ")}
                   style={{
                     cursor: disabled ? "default" : "pointer",
+                    borderWidth: `${borderWidth}px`,
                     ...(hovered && !disabled
                       ? { boxShadow: "0 0 0 1px rgba(250,204,21,0.25) inset, 0 0 14px 1px rgba(239,68,68,0.5)" }
                       : {}),
@@ -1109,10 +1361,14 @@ function ZoomableAnnotatedImage({
       </div>
 
       <div className="mt-2 text-center text-[11px] text-zinc-500">
-        ✏️ Markér-modus: hurtigklikk på en midd → lager en firkant automatisk. Trenger du
-        større boks: hold inne og dra. Klikk på en eksisterende firkant for å fjerne den. Hold
-        SHIFT for å panorere mens du merker. Mobil: knip to fingre for å zoome, tap for å merke,
-        dra for å tegne større.
+        <span className="font-semibold text-zinc-400">✨ Auto:</span> klikk på midd → auto-boks.{" "}
+        <span className="font-semibold text-zinc-400">⬛ Tegn:</span> dra for å tegne boks.{" "}
+        <span className="font-semibold text-zinc-400">✋ Pan:</span> dra for å forflytte.{" "}
+        Klikk eksisterende boks for å slette. Hold{" "}
+        <kbd className="rounded bg-zinc-800 px-1 text-zinc-300">SPACE</kbd> i Auto for å tegne over eksisterende.
+        Hold <kbd className="rounded bg-zinc-800 px-1 text-zinc-300">SHIFT</kbd> for pan i alle moduser.
+        Zoom: tast <kbd className="rounded bg-zinc-800 px-1 text-zinc-300">1</kbd> (ut) /{" "}
+        <kbd className="rounded bg-zinc-800 px-1 text-zinc-300">2</kbd> (inn), sveip eller knapper.
       </div>
     </div>
   );
@@ -1159,6 +1415,9 @@ export function ProductionSubmissionClient() {
   const [saveError, setSaveError] = useState<string | null>(null);
   const [saveOk, setSaveOk] = useState<string | null>(null);
   const [isSaving, setIsSaving] = useState(false);
+  const [exportToast, setExportToast] = useState<{ kind: "ok" | "err"; text: string } | null>(null);
+  const initialAnnotationsRef = useRef<Record<number, VarroaBoundingBox[] | null>>({});
+  const lastLoadedIdRef = useRef<string | null>(null);
   const totalImages = images.length;
   const isLastImage = totalImages === 0 || selectedImage >= totalImages - 1;
   const currentDraft = imageDrafts[selectedImage] ?? createEmptyImageDraft(selectedImage);
@@ -1283,7 +1542,19 @@ export function ProductionSubmissionClient() {
 
       const ownReview = loadedReviews.find((review) => review.created_by === nextAccess.userId);
       const latestReview = ownReview ?? loadedReviews[0] ?? null;
-      const sharedImageNotes = latestReview?.image_notes;
+      // Admin-approved annotations live in the review's image_notes.
+      // AI suggestions (ai_annotations_pending) live in the submission's image_notes.
+      // Use the review's notes if it has annotations; otherwise fall back to the
+      // submission's AI suggestions so admin can see & correct them (active learning).
+      const reviewHasAnnotations =
+        latestReview?.image_notes != null &&
+        Array.isArray(latestReview.image_notes) &&
+        (latestReview.image_notes as unknown[]).some(
+          (n) => n && typeof n === "object" && Array.isArray((n as Record<string, unknown>).annotations) && (n as { annotations: unknown[] }).annotations.length > 0,
+        );
+      const sharedImageNotes = reviewHasAnnotations
+        ? latestReview!.image_notes
+        : loaded.image_notes;
       const nextImageIndex =
         typeof latestReview?.current_image_index === "number"
           ? latestReview.current_image_index
@@ -1300,6 +1571,19 @@ export function ProductionSubmissionClient() {
           imageReview,
           sharedImageNotes,
         );
+      }
+      // For images without a saved review yet, prefill with AI suggestions
+      // (ai_annotations_pending) from the submission's image_notes so admin
+      // can correct them instead of re-annotating from scratch (active learning).
+      for (let index = 0; index < signedImages.length; index += 1) {
+        const draft = nextDrafts[index];
+        if (draft.annotations.length === 0) {
+          const aiBoxes = extractAIPendingFromImageNotes(sharedImageNotes, index);
+          if (aiBoxes.length > 0) {
+            draft.annotations = aiBoxes;
+            draft.miteCountInput = String(aiBoxes.length);
+          }
+        }
       }
       if (loadedImageReviews.length === 0 && latestReview) {
         const fallbackIndex = Math.min(Math.max(nextImageIndex, 0), Math.max(signedImages.length - 1, 0));
@@ -1320,6 +1604,22 @@ export function ProductionSubmissionClient() {
           approved: Boolean(latestReview.approved),
           annotations,
         };
+      }
+      // Snapshot initial annotations (deep-ish copy) so we can detect changes later
+      // when deciding whether "Send to Roboflow training" has corrections to submit.
+      // Only capture on first load for this submission; reloading after saving must
+      // not reset the baseline (otherwise "no corrections" shows falsely).
+      if (lastLoadedIdRef.current !== id) {
+        initialAnnotationsRef.current = {};
+      }
+      if (Object.keys(initialAnnotationsRef.current).length === 0) {
+        const snap: Record<number, VarroaBoundingBox[] | null> = {};
+        for (let idx = 0; idx < signedImages.length; idx += 1) {
+          const d = nextDrafts[idx];
+          snap[idx] = d?.annotations ? d.annotations.map((a) => ({ ...a })) : null;
+        }
+        initialAnnotationsRef.current = snap;
+        lastLoadedIdRef.current = id ?? null;
       }
       setImageDrafts(nextDrafts);
     } catch (e) {
@@ -1383,6 +1683,151 @@ export function ProductionSubmissionClient() {
   const handleAnnotationsChange = (next: VarroaBoundingBox[]) => {
     updateCurrentDraft({ annotations: next });
   };
+
+  const rerunAIOnCurrentSubmission = useCallback(async () => {
+    if (!item || !supabase || !access?.userId) return;
+    setExportToast({ kind: "ok", text: "AI starter på nytt. Vent 30–60 sekunder og last siden på nytt." });
+    window.setTimeout(() => setExportToast(null), 5000);
+    try {
+      const sbUrl = process.env.NEXT_PUBLIC_SUPABASE_URL?.replace(/\/$/, "") ?? "";
+      const anonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ?? "";
+      const { data } = await supabase.auth.getSession();
+      const jwtMaybe = data.session?.access_token ?? anonKey;
+      const headers: Record<string, string> = {
+        "Content-Type": "application/json",
+        apikey: anonKey,
+        Authorization: `Bearer ${jwtMaybe}`,
+      };
+      const res = await fetch(`${sbUrl}/functions/v1/varroa-infer`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ submission_id: item.id, signed_images: [] }),
+      });
+      if (!res.ok) {
+        console.warn("rerun ai non-2xx", res.status, res.statusText);
+      }
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      setExportToast({ kind: "err", text: `Kunne ikke starte AI på nytt: ${msg}` });
+      window.setTimeout(() => setExportToast(null), 8000);
+    }
+  }, [item, supabase, access?.userId]);
+
+  const detectAnnotationChanges = useCallback(
+    (idx: number): boolean => {
+      const initial = initialAnnotationsRef.current[idx];
+      const now = imageDrafts[idx]?.annotations ?? [];
+      if (!initial) return now.length > 0;
+      if (initial.length !== now.length) return true;
+      const byId = new Map<string, VarroaBoundingBox>();
+      for (const b of initial) byId.set(b.id, b);
+      for (const b of now) {
+        const a = byId.get(b.id);
+        if (!a) return true;
+        const EPS = 0.001;
+        if (
+          Math.abs(a.x - b.x) > EPS ||
+          Math.abs(a.y - b.y) > EPS ||
+          Math.abs(a.w - b.w) > EPS ||
+          Math.abs(a.h - b.h) > EPS
+        ) {
+          return true;
+        }
+        byId.delete(b.id);
+      }
+      if (byId.size > 0) return true;
+      return false;
+    },
+    [imageDrafts],
+  );
+
+  const sendCurrentImageToTraining = useCallback(async () => {
+    if (!item || !supabase || !access?.userId) return;
+    const idx = selectedImage;
+    const annotations = currentDraft.annotations ?? [];
+    if (annotations.length === 0) {
+      const ok = window.confirm(
+        "Ingen merking (midd-bokser) på dette bildet. Uten annoteringer lærer modellen ingenting. Er du sikker på at du vil sende bildet likevel?",
+      );
+      if (!ok) return;
+    } else {
+      const changed = detectAnnotationChanges(idx);
+      if (!changed) {
+        const ok = window.confirm(
+          "Ingen korreksjoner gjort (AI-boksene er uendret). Hvis du bare sender AI-prediksjoner uten endringer, vil ikke modellen bli bedre. Er du sikker på at du vil sende likevel?",
+        );
+        if (!ok) return;
+      }
+    }
+    // First save draft so the export edge function will see the new annotations
+    // by reading the latest image_notes from DB. If persist fails → abort.
+    try {
+      await persist("SAVE_DRAFT");
+    } catch {
+      // persist() itself sets setSaveError on failure.
+    }
+    setExportToast({ kind: "ok", text: "Sender til Roboflow… vent." });
+    try {
+      // Enqueue row (upsert due to UNIQUE(submission_id, image_index))
+      const { error: queueErr } = await supabase
+        .from("varroa_annotation_export_queue")
+        .upsert(
+          {
+            submission_id: item.id,
+            image_index: idx,
+            status: "PENDING",
+            approved_by_admin_id: access.userId,
+          },
+          {
+            onConflict: "submission_id,image_index",
+            ignoreDuplicates: false,
+          },
+        )
+        .select("id")
+        .maybeSingle();
+      if (queueErr) {
+        throw new Error(
+          `Kunne ikke legge til i export-kø. Har du kjørt den nyeste SQL-migrasjonen? (${queueErr.code ?? ""} ${queueErr.message})`,
+        );
+      }
+
+      // Trigger export function
+      const sbUrl = process.env.NEXT_PUBLIC_SUPABASE_URL?.replace(/\/$/, "") ?? "";
+      const anonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ?? "";
+      const { data: sess } = await supabase.auth.getSession();
+      const jwtMaybe = sess.session?.access_token ?? null;
+      const headers: Record<string, string> = {
+        "Content-Type": "application/json",
+        apikey: anonKey,
+        Authorization: `Bearer ${jwtMaybe || anonKey}`,
+      };
+      const res = await fetch(`${sbUrl}/functions/v1/varroa-export-training`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ submission_id: item.id, image_index: idx }),
+      });
+      const text = await res.text();
+      let json: unknown = null;
+      try {
+        json = text ? JSON.parse(text) : null;
+      } catch {
+        json = { raw_text: text };
+      }
+      if (!res.ok) {
+        const msg =
+          json && typeof json === "object" && "error" in json
+            ? String((json as { error?: unknown }).error ?? "")
+            : `HTTP ${res.status} ${res.statusText}`;
+        throw new Error(msg || "Feil under opplasting til Roboflow");
+      }
+      setExportToast({ kind: "ok", text: "Sendt til Roboflow! Bildet og annoteringene er nå i treningsdatasettet." });
+      window.setTimeout(() => setExportToast(null), 8000);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      setExportToast({ kind: "err", text: `Feil: ${msg}` });
+      window.setTimeout(() => setExportToast(null), 12000);
+    }
+  }, [item, supabase, access?.userId, selectedImage, currentDraft.annotations, detectAnnotationChanges]);
 
   const persist = async (action: SaveAction) => {
     setSaveError(null);
@@ -1895,6 +2340,7 @@ export function ProductionSubmissionClient() {
                       boxes={currentDraft.annotations ?? []}
                       onBoxesChange={handleAnnotationsChange}
                       disabled={isArchived || isFinalized || isSaving || isLoading}
+                      aiBorderStyle="dashed"
                     />
                   ) : (
                     <div className="flex h-[55vh] items-center justify-center text-sm text-zinc-500 xl:h-[70vh]">
@@ -1902,6 +2348,39 @@ export function ProductionSubmissionClient() {
                     </div>
                   )}
                 </div>
+
+                {currentImage ? (
+                  <div className="mt-4 flex flex-wrap items-center gap-2">
+                    <button
+                      type="button"
+                      disabled={isSaving || isArchived || isFinalized || isLoading || !item}
+                      onClick={rerunAIOnCurrentSubmission}
+                      className="h-10 rounded-xl border border-sky-800/60 bg-sky-950/40 px-3 text-xs font-semibold text-sky-100 active:opacity-90 disabled:opacity-50"
+                    >
+                      🧠 Kjør AI-telling på nytt
+                    </button>
+                    <button
+                      type="button"
+                      disabled={isSaving || isArchived || isLoading || !item || !access?.userId}
+                      onClick={sendCurrentImageToTraining}
+                      className="h-10 rounded-xl border border-fuchsia-800/60 bg-fuchsia-950/40 px-3 text-xs font-semibold text-fuchsia-100 active:opacity-90 disabled:opacity-50"
+                    >
+                      🚀 Send til Roboflow trening
+                    </button>
+                    {exportToast ? (
+                      <span
+                        className={[
+                          "ml-auto rounded-full px-3 py-1.5 text-[11px] font-bold",
+                          exportToast.kind === "ok"
+                            ? "border border-emerald-800 bg-emerald-950/60 text-emerald-200"
+                            : "border border-red-900 bg-red-950/60 text-red-200",
+                        ].join(" ")}
+                      >
+                        {exportToast.text}
+                      </span>
+                    ) : null}
+                  </div>
+                ) : null}
 
                 {images.length > 1 ? (
                   <div className="mt-4 grid grid-cols-4 gap-3 xl:grid-cols-6">

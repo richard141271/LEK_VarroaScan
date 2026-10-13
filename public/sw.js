@@ -1,4 +1,4 @@
-const CACHE_NAME = "lek-varroascan-v4";
+const CACHE_NAME = "lek-varroascan-v5";
 
 function getBasePath() {
   const scope = new URL(self.registration.scope);

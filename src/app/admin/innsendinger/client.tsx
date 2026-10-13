@@ -60,6 +60,9 @@ export function AdminQueueClient() {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [exportQueue, setExportQueue] = useState<
+    Array<{ submission_id: string; image_index: number; status: string; sent_at: string | null }>
+  >([]);
 
   const canDeleteSubmissions = Boolean(
     access?.role === "SUPERADMIN" || access?.role === "FAGANSVARLIG",
@@ -136,13 +139,17 @@ export function AdminQueueClient() {
         return;
       }
 
-      const [submissionsRes, availableRes] = await Promise.all([
+      const [submissionsRes, availableRes, exportRes] = await Promise.all([
         supabase
           .from("varroa_submissions")
           .select(getSubmissionSelect())
           .order("updated_at", { ascending: false })
           .limit(500),
         supabase.rpc("varroa_available_new_count"),
+        supabase
+          .from("varroa_annotation_export_queue")
+          .select("submission_id,image_index,status,sent_at")
+          .order("sent_at", { ascending: false }),
       ]);
 
       if (submissionsRes.error) {
@@ -164,6 +171,23 @@ export function AdminQueueClient() {
         }
       } else {
         setAvailableNewCount(Number(availableRes.data ?? 0));
+      }
+
+      if (exportRes.error) {
+        if (isMissingWorkflowSchemaError(exportRes.error)) {
+          setExportQueue([]);
+        } else {
+          throw exportRes.error;
+        }
+      } else {
+        setExportQueue(
+          (exportRes.data ?? []) as Array<{
+            submission_id: string;
+            image_index: number;
+            status: string;
+            sent_at: string | null;
+          }>,
+        );
       }
     } catch (e) {
       const message =
@@ -267,6 +291,28 @@ export function AdminQueueClient() {
     }
   };
 
+  const sentToRoboflowMap = useMemo(() => {
+    const map = new Map<string, Set<number>>();
+    for (const entry of exportQueue) {
+      if (entry.status === "SENT") {
+        const set = map.get(entry.submission_id) ?? new Set<number>();
+        set.add(entry.image_index);
+        map.set(entry.submission_id, set);
+      }
+    }
+    return map;
+  }, [exportQueue]);
+
+  const getSentImageCount = useCallback(
+    (submissionId: string) => sentToRoboflowMap.get(submissionId)?.size ?? 0,
+    [sentToRoboflowMap],
+  );
+
+  const isSentToRoboflow = useCallback(
+    (submissionId: string) => sentToRoboflowMap.has(submissionId),
+    [sentToRoboflowMap],
+  );
+
   const filteredItems = useMemo(() => {
     const userId = access?.userId;
     if (!access?.role) return [];
@@ -281,7 +327,10 @@ export function AdminQueueClient() {
     }
     if (view === "training") {
       return items.filter(
-        (item) => item.status === "GODKJENT" || item.status === "KLAR_FOR_TRENING",
+        (item) =>
+          item.status === "GODKJENT" ||
+          item.status === "KLAR_FOR_TRENING" ||
+          isSentToRoboflow(item.id),
       );
     }
     if (view === "archive") {
@@ -293,7 +342,7 @@ export function AdminQueueClient() {
       );
     }
     return items;
-  }, [access, items, view]);
+  }, [access, isSentToRoboflow, items, view]);
 
   const queueTitle = useMemo(() => {
     switch (view) {
@@ -500,13 +549,25 @@ export function AdminQueueClient() {
                           </div>
 
                           <div className="lg:justify-self-start">
-                            <div
-                              className={[
-                                "inline-flex rounded-full border px-3 py-1 text-[11px] font-semibold",
-                                ui.chipClass,
-                              ].join(" ")}
-                            >
-                              {ui.label}
+                            <div className="flex flex-wrap items-center gap-1.5">
+                              <div
+                                className={[
+                                  "inline-flex rounded-full border px-3 py-1 text-[11px] font-semibold",
+                                  ui.chipClass,
+                                ].join(" ")}
+                              >
+                                {ui.label}
+                              </div>
+                              {isSentToRoboflow(item.id) ? (
+                                <div className="inline-flex items-center gap-1 rounded-full border border-emerald-500/40 bg-emerald-500/10 px-2.5 py-1 text-[10px] font-semibold text-emerald-300">
+                                  ✓ Sendt til Roboflow
+                                  {getSentImageCount(item.id) > 0 ? (
+                                    <span className="text-emerald-400/70">
+                                      ({getSentImageCount(item.id)})
+                                    </span>
+                                  ) : null}
+                                </div>
+                              ) : null}
                             </div>
                           </div>
 
