@@ -475,13 +475,6 @@ function ZoomableAnnotatedImage({
     const data = id.data;
     const minDim = Math.min(iw, ih);
 
-    // A varroa mite is small. Box size is a fixed fraction of image size so it
-    // is consistent across overview and close-up shots. Mites are typically
-    // 1-2% of the image; box adds a little padding.
-    const BOX_NORM = 0.02;
-
-    const boxPx = Math.round(BOX_NORM * minDim);
-
     let cx = Math.round(normX * iw);
     let cy = Math.round(normY * ih);
     cx = Math.max(2, Math.min(iw - 3, cx));
@@ -492,13 +485,14 @@ function ZoomableAnnotatedImage({
       return 0.299 * data[off] + 0.587 * data[off + 1] + 0.114 * data[off + 2];
     };
 
-    // Sample background luminance from a ring around the click point.
+    // Sample background luminance from rings around the click point.
     const ringRadii = [
       Math.max(15, Math.round(minDim * 0.025)),
-      Math.max(28, Math.round(minDim * 0.045)),
+      Math.max(30, Math.round(minDim * 0.05)),
+      Math.max(50, Math.round(minDim * 0.08)),
     ];
     const bgSamples: number[] = [];
-    for (let a = 0; a < 360; a += 10) {
+    for (let a = 0; a < 360; a += 8) {
       const rad = (a * Math.PI) / 180;
       for (const r of ringRadii) {
         const sx = Math.round(cx + r * Math.cos(rad));
@@ -513,7 +507,8 @@ function ZoomableAnnotatedImage({
       ? bgSamples[Math.floor(bgSamples.length * 0.5)]
       : 200;
 
-    const DARK_MARGIN = Math.max(14, bgLum * 0.14);
+    // Mites are significantly darker than the background.
+    const DARK_MARGIN = Math.max(20, bgLum * 0.22);
     const threshold = bgLum - DARK_MARGIN;
 
     const isDark = (px: number, py: number) => {
@@ -521,14 +516,13 @@ function ZoomableAnnotatedImage({
       return lum(px, py) < threshold;
     };
 
-    // Find the center of the nearest dark blob (the mite). Search outward from
-    // the click point; once a dark pixel is found, do a small flood fill to
-    // find the blob's centroid.
+    // Find the nearest dark pixel to the click (in case click landed on a
+    // bright reflection or light spot on the mite).
     let startX = cx;
     let startY = cy;
     if (!isDark(cx, cy)) {
       let found = false;
-      for (let r = 1; r <= 15 && !found; r++) {
+      for (let r = 1; r <= 30 && !found; r++) {
         for (let dy = -r; dy <= r && !found; dy++) {
           for (let dx = -r; dx <= r && !found; dx++) {
             if (Math.abs(dx) !== r && Math.abs(dy) !== r) continue;
@@ -542,75 +536,121 @@ function ZoomableAnnotatedImage({
           }
         }
       }
-      if (!found) {
-        // No dark pixel nearby → box centered on the click.
-        const hx = boxPx / 2;
-        const hy = boxPx / 2;
-        return {
-          x: Math.max(0, cx - hx) / iw,
-          y: Math.max(0, cy - hy) / ih,
-          w: boxPx / iw,
-          h: boxPx / ih,
-        };
-      }
+      if (!found) return null;
     }
 
-    // Small flood fill to find the centroid of the mite blob.
-    // Limited to a small radius so we don't merge with neighbors.
-    const floodRadius = Math.round(minDim * 0.02);
-    const visited = new Set<number>();
+    // Max radius for the region: a mite can be large in a close-up shot,
+    // but we cap it to avoid swallowing the whole image.
+    const maxRadius = Math.round(minDim * 0.2);
+
+    let v = visitedGenRef.current;
+    if (!v || v.w !== iw || v.h !== ih) {
+      v = { w: iw, h: ih, array: new Int32Array(iw * ih), gen: 0 };
+      visitedGenRef.current = v;
+    }
+    v.gen = (v.gen + 1) | 0;
+    const gen = v.gen;
+    const visited = v.array;
+
+    // Region growing: collect all connected dark pixels within maxRadius.
+    const darkPixels: Array<[number, number]> = [];
     const stack: number[] = [startY * iw + startX];
-    let sumX = 0;
-    let sumY = 0;
-    let count = 0;
+    visited[startY * iw + startX] = gen;
 
     while (stack.length > 0) {
       const idx = stack.pop()!;
-      if (visited.has(idx)) continue;
-      visited.add(idx);
       const px = idx % iw;
       const py = (idx - px) / iw;
-      if (Math.abs(px - startX) > floodRadius || Math.abs(py - startY) > floodRadius) continue;
+      const dist = Math.hypot(px - startX, py - startY);
+      if (dist > maxRadius) continue;
       if (!isDark(px, py)) continue;
-      sumX += px;
-      sumY += py;
-      count++;
+      darkPixels.push([px, py]);
+
       for (let dy = -1; dy <= 1; dy++) {
         for (let dx = -1; dx <= 1; dx++) {
           if (dx === 0 && dy === 0) continue;
           const nx = px + dx;
           const ny = py + dy;
-          if (nx >= 0 && ny >= 0 && nx < iw && ny < ih) {
-            stack.push(ny * iw + nx);
-          }
+          if (nx < 0 || ny < 0 || nx >= iw || ny >= ih) continue;
+          const nIdx = ny * iw + nx;
+          if (visited[nIdx] === gen) continue;
+          visited[nIdx] = gen;
+          stack.push(nIdx);
         }
       }
     }
 
-    // Center the box on the blob centroid (or click if no blob found).
-    const centerX = count > 0 ? sumX / count : cx;
-    const centerY = count > 0 ? sumY / count : cy;
+    if (darkPixels.length === 0) return null;
 
-    const hx = boxPx / 2;
-    const hy = boxPx / 2;
-    let bx1 = Math.round(centerX - hx);
-    let by1 = Math.round(centerY - hy);
-    let bx2 = Math.round(centerX + hx);
-    let by2 = Math.round(centerY + hy);
+    // Bounding box of the dark region.
+    let x1 = Infinity, y1 = Infinity, x2 = -Infinity, y2 = -Infinity;
+    for (const [px, py] of darkPixels) {
+      if (px < x1) x1 = px;
+      if (py < y1) y1 = py;
+      if (px > x2) x2 = px;
+      if (py > y2) y2 = py;
+    }
 
-    if (bx1 < 0) { bx2 -= bx1; bx1 = 0; }
-    if (by1 < 0) { by2 -= by1; by1 = 0; }
-    if (bx2 >= iw) { bx1 -= (bx2 - iw + 1); bx2 = iw - 1; }
-    if (by2 >= ih) { by1 -= (by2 - ih + 1); by2 = ih - 1; }
-    bx1 = Math.max(0, bx1);
-    by1 = Math.max(0, by1);
+    // Fill holes (bright reflections) inside the bbox: any pixel inside the
+    // bbox that is surrounded by dark pixels belongs to the mite.
+    // Use a morphological closing: dilate the dark region by a few pixels,
+    // then take the bbox of the result.
+    const dilateR = Math.max(3, Math.round(Math.min(x2 - x1, y2 - y1) * 0.12));
+    const closed: Array<[number, number]> = [];
+    for (let py = y1 - dilateR; py <= y2 + dilateR; py++) {
+      for (let px = x1 - dilateR; px <= x2 + dilateR; px++) {
+        if (px < 0 || py < 0 || px >= iw || py >= ih) continue;
+        // Check if this pixel is within dilateR of any dark pixel.
+        let nearDark = false;
+        for (let dy = -dilateR; dy <= dilateR && !nearDark; dy++) {
+          for (let dx = -dilateR; dx <= dilateR && !nearDark; dx++) {
+            if (dx * dx + dy * dy > dilateR * dilateR) continue;
+            const nx = px + dx;
+            const ny = py + dy;
+            if (nx < 0 || ny < 0 || nx >= iw || ny >= ih) continue;
+            if (isDark(nx, ny)) nearDark = true;
+          }
+        }
+        if (nearDark) closed.push([px, py]);
+      }
+    }
 
-    const wPx = bx2 - bx1 + 1;
-    const hPx = by2 - by1 + 1;
+    // Final bbox from the closed region.
+    let fx1 = Infinity, fy1 = Infinity, fx2 = -Infinity, fy2 = -Infinity;
+    for (const [px, py] of closed) {
+      if (px < fx1) fx1 = px;
+      if (py < fy1) fy1 = py;
+      if (px > fx2) fx2 = px;
+      if (py > fy2) fy2 = py;
+    }
+
+    // Safety: if the closed region is unreasonably large (merged with
+    // neighbors or noise), fall back to the original dark bbox.
+    const closedW = fx2 - fx1 + 1;
+    const closedH = fy2 - fy1 + 1;
+    const darkW = x2 - x1 + 1;
+    const darkH = y2 - y1 + 1;
+    if (closedW > darkW * 3 || closedH > darkH * 3) {
+      fx1 = x1; fy1 = y1; fx2 = x2; fy2 = y2;
+    }
+
+    // Add padding around the mite.
+    const MARGIN = 0.15;
+    const boxW = fx2 - fx1 + 1;
+    const boxH = fy2 - fy1 + 1;
+    const padX = Math.round(boxW * MARGIN);
+    const padY = Math.round(boxH * MARGIN);
+    fx1 = Math.max(0, fx1 - padX);
+    fy1 = Math.max(0, fy1 - padY);
+    fx2 = Math.min(iw - 1, fx2 + padX);
+    fy2 = Math.min(ih - 1, fy2 + padY);
+
+    const wPx = fx2 - fx1 + 1;
+    const hPx = fy2 - fy1 + 1;
 
     return {
-      x: bx1 / iw,
-      y: by1 / ih,
+      x: fx1 / iw,
+      y: fy1 / ih,
       w: wPx / iw,
       h: hPx / ih,
     };
