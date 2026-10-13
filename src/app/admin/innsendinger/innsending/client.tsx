@@ -475,11 +475,11 @@ function ZoomableAnnotatedImage({
     const data = id.data;
     const minDim = Math.min(iw, ih);
 
-    // A mite is a small, dark object. These bounds keep the box realistic
-    // regardless of image resolution (overview vs close-up).
-    const MIN_BOX_NORM = 0.018;
-    const DEFAULT_BOX_NORM = 0.038;
-    const MAX_BOX_NORM = 0.075;
+    // Mites are small dark objects. Bounds are relative to image size so it
+    // works on both overview and close-up shots.
+    const MIN_BOX_NORM = 0.012;
+    const DEFAULT_BOX_NORM = 0.025;
+    const MAX_BOX_NORM = 0.05;
 
     const minBoxPx = Math.round(MIN_BOX_NORM * minDim);
     const defaultBoxPx = Math.round(DEFAULT_BOX_NORM * minDim);
@@ -495,13 +495,13 @@ function ZoomableAnnotatedImage({
       return 0.299 * data[off] + 0.587 * data[off + 1] + 0.114 * data[off + 2];
     };
 
-    // Sample background luminance from two rings around the click point.
+    // Sample background luminance from a ring around the click point.
     const ringRadii = [
-      Math.max(20, Math.round(minDim * 0.035)),
-      Math.max(35, Math.round(minDim * 0.06)),
+      Math.max(18, Math.round(minDim * 0.03)),
+      Math.max(30, Math.round(minDim * 0.05)),
     ];
     const bgSamples: number[] = [];
-    for (let a = 0; a < 360; a += 12) {
+    for (let a = 0; a < 360; a += 10) {
       const rad = (a * Math.PI) / 180;
       for (const r of ringRadii) {
         const sx = Math.round(cx + r * Math.cos(rad));
@@ -513,11 +513,11 @@ function ZoomableAnnotatedImage({
     }
     bgSamples.sort((a, b) => a - b);
     const bgLum = bgSamples.length > 0
-      ? bgSamples[Math.floor(bgSamples.length * 0.55)]
+      ? bgSamples[Math.floor(bgSamples.length * 0.5)]
       : 200;
 
-    // Pixels darker than (background - margin) are considered mite.
-    const DARK_MARGIN = Math.max(16, bgLum * 0.16);
+    // A pixel is "mite" if significantly darker than local background.
+    const DARK_MARGIN = Math.max(14, bgLum * 0.14);
     const threshold = bgLum - DARK_MARGIN;
 
     const isDark = (px: number, py: number) => {
@@ -525,41 +525,24 @@ function ZoomableAnnotatedImage({
       return lum(px, py) < threshold;
     };
 
-    // Max region pixels (safety cap).
-    const MAX_REGION = Math.max(6000, Math.round((iw * ih) / 150));
-    // Region growing cannot grow farther than half the max box from the click.
-    const maxDist = maxBoxPx / 2;
-
-    let v = visitedGenRef.current;
-    if (!v || v.w !== iw || v.h !== ih) {
-      v = { w: iw, h: ih, array: new Int32Array(iw * ih), gen: 0 };
-      visitedGenRef.current = v;
-    }
-    v.gen = (v.gen + 1) | 0;
-    const gen = v.gen;
-    const visited = v.array;
-
-    // If the click point itself is not dark, search outward in a small spiral.
-    let startX = cx;
-    let startY = cy;
+    // If the click point is not dark, search nearby for the nearest dark pixel.
     if (!isDark(cx, cy)) {
       let found = false;
-      for (let r = 1; r <= 20 && !found; r++) {
+      for (let r = 1; r <= 18 && !found; r++) {
         for (let dy = -r; dy <= r && !found; dy++) {
           for (let dx = -r; dx <= r && !found; dx++) {
             if (Math.abs(dx) !== r && Math.abs(dy) !== r) continue;
             const sx = cx + dx;
             const sy = cy + dy;
             if (isDark(sx, sy)) {
-              startX = sx;
-              startY = sy;
+              cx = sx;
+              cy = sy;
               found = true;
             }
           }
         }
       }
       if (!found) {
-        // No dark pixel nearby → default box centered on the click.
         const hx = defaultBoxPx / 2;
         const hy = defaultBoxPx / 2;
         return {
@@ -571,80 +554,52 @@ function ZoomableAnnotatedImage({
       }
     }
 
-    const stack: number[] = [];
-    const startIdx = startY * iw + startX;
-    stack.push(startIdx);
-    visited[startIdx] = gen;
+    // Radial scan: walk outward from the center in many directions until we
+    // hit a non-dark pixel (mite edge). This avoids merging with neighboring
+    // mites, unlike region-growing.
+    const directions = 24;
+    let maxLeft = 0, maxRight = 0, maxUp = 0, maxDown = 0;
 
-    let x1 = startX;
-    let y1 = startY;
-    let x2 = startX;
-    let y2 = startY;
-    let count = 0;
-
-    while (stack.length > 0 && count < MAX_REGION) {
-      const idx = stack.pop()!;
-      const px = idx % iw;
-      const py = (idx - px) / iw;
-      // Stop growing if we exceed the max box extent from the click point.
-      if (Math.abs(px - cx) > maxDist || Math.abs(py - cy) > maxDist) {
-        continue;
+    for (let i = 0; i < directions; i++) {
+      const angle = (i * 2 * Math.PI) / directions;
+      const dx = Math.cos(angle);
+      const dy = Math.sin(angle);
+      let dist = 0;
+      // Walk outward up to half the max box size.
+      while (dist < maxBoxPx / 2) {
+        dist += 1;
+        const px = Math.round(cx + dx * dist);
+        const py = Math.round(cy + dy * dist);
+        if (!isDark(px, py)) break;
       }
-      if (px < x1) x1 = px;
-      if (py < y1) y1 = py;
-      if (px > x2) x2 = px;
-      if (py > y2) y2 = py;
-      count++;
-
-      for (let dy = -1; dy <= 1; dy++) {
-        for (let dx = -1; dx <= 1; dx++) {
-          if (dx === 0 && dy === 0) continue;
-          const nx = px + dx;
-          const ny = py + dy;
-          if (nx < 0 || ny < 0 || nx >= iw || ny >= ih) continue;
-          if (Math.abs(nx - cx) > maxDist || Math.abs(ny - cy) > maxDist) continue;
-          const nIdx = ny * iw + nx;
-          if (visited[nIdx] === gen) continue;
-          visited[nIdx] = gen;
-          if (isDark(nx, ny)) {
-            stack.push(nIdx);
-          }
-        }
-      }
+      // The edge is one step back (last dark pixel).
+      const edgeDist = dist - 1;
+      if (dx < -0.5 && edgeDist > maxLeft) maxLeft = edgeDist;
+      if (dx > 0.5 && edgeDist > maxRight) maxRight = edgeDist;
+      if (dy < -0.5 && edgeDist > maxUp) maxUp = edgeDist;
+      if (dy > 0.5 && edgeDist > maxDown) maxDown = edgeDist;
     }
 
-    let regionW = x2 - x1 + 1;
-    let regionH = y2 - y1 + 1;
+    // Box extent from the measured edges, with padding.
+    const MARGIN = 0.2;
+    let halfW = Math.max(maxLeft, maxRight) * (1 + MARGIN);
+    let halfH = Math.max(maxUp, maxDown) * (1 + MARGIN);
 
-    // If the detected dark region is too small, fall back to a default box
-    // centered on the click point.
-    if (regionW < minBoxPx || regionH < minBoxPx) {
-      const hx = defaultBoxPx / 2;
-      const hy = defaultBoxPx / 2;
-      return {
-        x: Math.max(0, cx - hx) / iw,
-        y: Math.max(0, cy - hy) / ih,
-        w: defaultBoxPx / iw,
-        h: defaultBoxPx / ih,
-      };
+    // Clamp to min/max.
+    halfW = Math.max(minBoxPx / 2, Math.min(maxBoxPx / 2, halfW));
+    halfH = Math.max(minBoxPx / 2, Math.min(maxBoxPx / 2, halfH));
+
+    // If the detected extent is suspiciously small (just noise), use default.
+    if (halfW < minBoxPx / 2 + 1 || halfH < minBoxPx / 2 + 1) {
+      halfW = defaultBoxPx / 2;
+      halfH = defaultBoxPx / 2;
     }
 
-    // Clamp the region to the max box size, centered on the click point.
-    // This prevents the box from growing into neighboring mites.
-    const halfW = Math.min(maxBoxPx / 2, Math.max(regionW, minBoxPx) / 2);
-    const halfH = Math.min(maxBoxPx / 2, Math.max(regionH, minBoxPx) / 2);
+    let bx1 = Math.round(cx - halfW);
+    let by1 = Math.round(cy - halfH);
+    let bx2 = Math.round(cx + halfW);
+    let by2 = Math.round(cy + halfH);
 
-    // Add padding so the entire mite is covered with a small margin.
-    const MARGIN = 0.25;
-    const boxHalfW = Math.min(maxBoxPx / 2, halfW * (1 + MARGIN));
-    const boxHalfH = Math.min(maxBoxPx / 2, halfH * (1 + MARGIN));
-
-    let bx1 = Math.round(cx - boxHalfW);
-    let by1 = Math.round(cy - boxHalfH);
-    let bx2 = Math.round(cx + boxHalfW);
-    let by2 = Math.round(cy + boxHalfH);
-
-    // Keep within image bounds.
     if (bx1 < 0) { bx2 -= bx1; bx1 = 0; }
     if (by1 < 0) { by2 -= by1; by1 = 0; }
     if (bx2 >= iw) { bx1 -= (bx2 - iw + 1); bx2 = iw - 1; }
@@ -1260,7 +1215,10 @@ function ZoomableAnnotatedImage({
               }
             }
             const hoverClass =
-              hovered && !disabled ? "border-[1.5px] border-red-500" : `border ${borderKindClass} ${borderColorClass}`;
+              hovered && !disabled
+                ? "border border-red-500"
+                : `border ${borderKindClass} ${borderColorClass}`;
+            const borderWidth = hovered && !disabled ? 1 : 0.5;
             return (
               <div
                 key={b.id}
@@ -1290,6 +1248,7 @@ function ZoomableAnnotatedImage({
                   ].join(" ")}
                   style={{
                     cursor: disabled ? "default" : "pointer",
+                    borderWidth: `${borderWidth}px`,
                     ...(hovered && !disabled
                       ? { boxShadow: "0 0 0 1px rgba(250,204,21,0.25) inset, 0 0 14px 1px rgba(239,68,68,0.5)" }
                       : {}),
