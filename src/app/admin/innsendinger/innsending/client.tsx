@@ -276,6 +276,7 @@ function ZoomableAnnotatedImage({
     endX: number;
     endY: number;
   } | null>(null);
+  const [drawGuidePoint, setDrawGuidePoint] = useState<{ x: number; y: number } | null>(null);
 
   const viewRef = useRef({ scale: 1, tx: 0, ty: 0 });
   useEffect(() => {
@@ -288,6 +289,7 @@ function ZoomableAnnotatedImage({
     setTx(0);
     setTy(0);
     setDrawing(null);
+    setDrawGuidePoint(null);
     imageDataRef.current = null;
     cachedSizeRef.current = null;
     visitedGenRef.current = null;
@@ -339,6 +341,7 @@ function ZoomableAnnotatedImage({
       clickCandidate.current = null;
       pointers.current.clear();
       setDrawing(null);
+      setDrawGuidePoint(null);
     };
 
     const onKeyDown = (e: globalThis.KeyboardEvent) => {
@@ -376,6 +379,7 @@ function ZoomableAnnotatedImage({
     const onBlur = () => {
       drawKeysPressed.current.shift = false;
       drawKeysPressed.current.space = false;
+      setDrawGuidePoint(null);
     };
     const onFocus = () => {
       drawKeysPressed.current.shift = false;
@@ -834,10 +838,15 @@ function ZoomableAnnotatedImage({
 
     const norm = clientToNormalized(e.clientX, e.clientY);
     if (!norm) {
+      setDrawGuidePoint(null);
       startPanFromPointer(e.clientX, e.clientY);
       clickCandidate.current = null;
       setDrawing(null);
       return;
+    }
+
+    if (tool === "draw" && !disabled) {
+      setDrawGuidePoint(norm);
     }
 
     // DRAW tool: start drawing a rectangle box
@@ -885,6 +894,9 @@ function ZoomableAnnotatedImage({
   };
 
   const onPointerMove = (e: PointerEvent<HTMLDivElement>) => {
+    if (tool === "draw" && !disabled) {
+      setDrawGuidePoint(clientToNormalized(e.clientX, e.clientY));
+    }
     if (!pointers.current.has(e.pointerId)) return;
     if (typeof e.shiftKey === "boolean") {
       drawKeysPressed.current.shift = e.shiftKey;
@@ -1121,6 +1133,19 @@ function ZoomableAnnotatedImage({
     return { left, top, width, height };
   };
 
+  const normalizedPointToCssPx = (x: number, y: number) => {
+    const r = getImageDisplayRect();
+    if (!r) return null;
+    return {
+      left: r.imgLeft + x * r.imgWidth,
+      top: r.imgTop + y * r.imgHeight,
+      imgLeft: r.imgLeft,
+      imgTop: r.imgTop,
+      imgWidth: r.imgWidth,
+      imgHeight: r.imgHeight,
+    };
+  };
+
   return (
     <div className="relative select-none">
       <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
@@ -1207,6 +1232,7 @@ function ZoomableAnnotatedImage({
         onPointerMove={onPointerMove}
         onPointerUp={onPointerUp}
         onPointerCancel={onPointerCancel}
+        onPointerLeave={() => setDrawGuidePoint(null)}
         onDoubleClick={onDoubleClick}
         className={[
           "relative overflow-hidden rounded-3xl bg-zinc-950",
@@ -1233,6 +1259,31 @@ function ZoomableAnnotatedImage({
             onLoad={handleImageLoad}
             className="h-auto max-h-full w-auto max-w-full object-contain select-none"
           />
+
+          {tool === "draw" && !disabled && drawGuidePoint ? (() => {
+            const guidePx = normalizedPointToCssPx(drawGuidePoint.x, drawGuidePoint.y);
+            if (!guidePx) return null;
+            return (
+              <div
+                className="pointer-events-none absolute"
+                style={{
+                  left: guidePx.imgLeft,
+                  top: guidePx.imgTop,
+                  width: guidePx.imgWidth,
+                  height: guidePx.imgHeight,
+                }}
+              >
+                <div
+                  className="absolute left-0 right-0 border-t border-dashed border-amber-300/80"
+                  style={{ top: guidePx.top - guidePx.imgTop, borderTopWidth: "1px" }}
+                />
+                <div
+                  className="absolute top-0 bottom-0 border-l border-dashed border-amber-300/80"
+                  style={{ left: guidePx.left - guidePx.imgLeft, borderLeftWidth: "1px" }}
+                />
+              </div>
+            );
+          })() : null}
 
           {boxes.map((b) => {
             const px = normalizedToCssPx(b);
