@@ -1275,11 +1275,11 @@ function ZoomableAnnotatedImage({
               >
                 <div
                   className="absolute left-0 right-0 border-t border-dashed border-amber-300/80"
-                  style={{ top: guidePx.top - guidePx.imgTop, borderTopWidth: "1px" }}
+                  style={{ top: guidePx.top - guidePx.imgTop, borderTopWidth: "0.5px" }}
                 />
                 <div
                   className="absolute top-0 bottom-0 border-l border-dashed border-amber-300/80"
-                  style={{ left: guidePx.left - guidePx.imgLeft, borderLeftWidth: "1px" }}
+                  style={{ left: guidePx.left - guidePx.imgLeft, borderLeftWidth: "0.5px" }}
                 />
               </div>
             );
